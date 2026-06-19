@@ -14,6 +14,7 @@
 // and writes the answer. This cuts latency by ~1/3 vs panel→judge→synth.
 
 import type { FusionPlanConfig, PanelModelSpec } from "../types/config";
+import { MAX_PANEL_COUNT, DEFAULT_MAX_PARALLEL_PANELS } from "../types/config";
 import type { ProviderRouter } from "../upstream/router";
 import { openaiStreamDelta } from "../adapters/openaiOut";
 
@@ -142,16 +143,25 @@ async function callPanel(
 }
 
 function buildPanelSpecs(plan: FusionPlanConfig): PanelModelSpec[] {
+  let specs: PanelModelSpec[];
   if (plan.strategy === "self_consistency" && plan.self_consistency) {
     const sc = plan.self_consistency;
     const temps = sc.temperatures ?? Array.from({ length: sc.samples }, (_, i) => 0.3 + i * 0.3);
-    return temps.map((t): PanelModelSpec => {
+    specs = temps.map((t): PanelModelSpec => {
       const spec: PanelModelSpec = { model: sc.model, temperature: t };
       if (sc.provider_id) spec.provider_id = sc.provider_id;
       return spec;
     });
+  } else {
+    specs = plan.panel_models ?? [];
   }
-  return plan.panel_models ?? [];
+  const cap = plan.max_panel_count ?? MAX_PANEL_COUNT;
+  if (specs.length > cap) {
+    throw new FusionConfigError(
+      `fusion plan expands to ${specs.length} panels, exceeding max_panel_count=${cap}`,
+    );
+  }
+  return specs;
 }
 
 function buildSynthPrompt(panelResponses: PanelResponse[], originalMessages: unknown[]): string {
@@ -190,15 +200,71 @@ async function runPanels(
     );
   }
 
-  const panelPromises = specs.map((spec) =>
-    callPanel(router, { ...basePayload, temperature: spec.temperature ?? 0.7 }, spec.model, spec.provider_id, maxTokens, timeoutMs),
+  // Bound concurrency so a misconfigured plan (e.g. 20 panels) doesn't fan out 20
+  // simultaneous upstream requests inside the Worker. We launch callPanel lazily
+  // through a semaphore instead of Promise.allSettled (which starts everything at once).
+  const maxParallel = plan.max_parallel_panels ?? DEFAULT_MAX_PARALLEL_PANELS;
+  const responses = await runSpecsWithConcurrency(
+    router, basePayload, specs, maxTokens, timeoutMs, maxParallel,
   );
-  const settled = await Promise.allSettled(panelPromises);
-  const responses: PanelResponse[] = settled.map((s, i) => {
-    if (s.status === "fulfilled") return s.value;
-    return { provider_id: specs[i]?.provider_id ?? "?", model: specs[i]?.model ?? "?", status: "error", latency_ms: 0, tokens_in: 0, tokens_out: 0, content: "", error: String(s.reason).slice(0, 300) };
-  });
   return { responses, messages };
+}
+
+/**
+ * Run panel specs with bounded concurrency. Each spec is launched (callPanel) only
+ * when a concurrency slot is free, so at most `maxParallel` upstream requests are
+ * in-flight at any time. Rejections are caught and converted to error PanelResponses.
+ */
+async function runSpecsWithConcurrency(
+  router: ProviderRouter,
+  basePayload: Record<string, unknown>,
+  specs: PanelModelSpec[],
+  maxTokens: number,
+  timeoutMs: number,
+  maxParallel: number,
+): Promise<PanelResponse[]> {
+  const results: PanelResponse[] = new Array(specs.length);
+  let cursor = 0;
+  let active = 0;
+  let resolveDone: (() => void) | null = null;
+  const done = new Promise<void>((r) => { resolveDone = r; });
+
+  const launchNext = (): void => {
+    while (active < maxParallel && cursor < specs.length) {
+      const idx = cursor++;
+      const spec = specs[idx]!;
+      active++;
+      callPanel(router, { ...basePayload, temperature: spec.temperature ?? 0.7 }, spec.model, spec.provider_id, maxTokens, timeoutMs)
+        .then(
+          (r) => { results[idx] = r; },
+          (err) => {
+            results[idx] = {
+              provider_id: spec.provider_id ?? "?",
+              model: spec.model ?? "?",
+              status: "error",
+              latency_ms: 0,
+              tokens_in: 0,
+              tokens_out: 0,
+              content: "",
+              error: err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300),
+            };
+          },
+        )
+        .finally(() => {
+          active--;
+          if (cursor >= specs.length && active === 0) {
+            resolveDone?.();
+          } else {
+            launchNext();
+          }
+        });
+    }
+  };
+  if (specs.length > 0) {
+    launchNext();
+    await done;
+  }
+  return results;
 }
 
 /**
@@ -245,18 +311,35 @@ async function* runPanelsStreaming(
       gateResolve = resolve;
     });
 
+  const maxParallel = plan.max_parallel_panels ?? DEFAULT_MAX_PARALLEL_PANELS;
   let pending = 0;
-  specs.forEach((spec) => {
+  let cursor = 0;
+  let active = 0;
+
+  const launchOne = (spec: PanelModelSpec): void => {
     pending++;
+    active++;
     callPanel(router, { ...basePayload, temperature: spec.temperature ?? 0.7 }, spec.model, spec.provider_id, maxTokens, timeoutMs)
       .then((r) => queue.push(r), (err) =>
         queue.push({ provider_id: spec.provider_id ?? "?", model: spec.model ?? "?", status: "error", latency_ms: 0, tokens_in: 0, tokens_out: 0, content: "", error: String(err).slice(0, 300) }),
       )
       .finally(() => {
         pending--;
+        active--;
         signal();
+        // When a slot frees up, launch the next spec (if any remain).
+        if (cursor < specs.length) {
+          launchOne(specs[cursor++]!);
+        }
       });
-  });
+  };
+
+  // Launch the initial batch (up to maxParallel) and then continue launching as
+  // each panel settles, so at most maxParallel upstream requests are in-flight.
+  const initial = Math.min(maxParallel, specs.length);
+  for (let i = 0; i < initial; i++) {
+    launchOne(specs[cursor++]!);
+  }
 
   const responses: PanelResponse[] = [];
   // Drain queued results as they arrive. Each iteration: if queue has items,
@@ -377,17 +460,19 @@ export async function* runFusionStream(
 
   yield { type: "synth_start" };
 
-  const synthProviderId = plan.synthesizer_provider_id ?? "?";
+  let synthProviderId = plan.synthesizer_provider_id ?? "?";
   let streamedAny = false;
   try {
     let synthTokensOut = 0;
-    // Route through streamOpenAIChat so the synthesizer gets circuit-breaker
-    // tracking and OpenAI-only provider filtering like the panels.
-    for await (const data of router.streamOpenAIChat(synthPayload, plan.synthesizer_model, {
+    // Route through streamOpenAIChatWithMeta so the synthesizer gets circuit-breaker
+    // tracking, OpenAI-only provider filtering, and we can capture the actual
+    // selected provider id for trace attribution (not just a pinned-id guess).
+    for await (const { chunk: data, providerId } of router.streamOpenAIChatWithMeta(synthPayload, plan.synthesizer_model, {
       pinnedProviderId: plan.synthesizer_provider_id,
       requireProtocol: "openai",
       timeoutMs: plan.timeout_ms ?? DEFAULT_TIMEOUT,
     })) {
+      synthProviderId = providerId;
       const { text } = openaiStreamDelta(data);
       if (text) {
         streamedAny = true;

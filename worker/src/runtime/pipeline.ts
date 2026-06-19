@@ -626,11 +626,33 @@ async function* streamOpenAIAsAnthropic(
     }
   } catch (err) {
     error = err;
+    // Emit the error event, then close the stream immediately. We do NOT emit a
+    // fake message_delta with stop_reason:"error" + message_stop afterwards —
+    // some SDKs reject the non-standard stop_reason enum, and the error event
+    // itself is the terminal signal for the stream.
     yield encodeSseEvent("error", { type: "error", error: { type: err instanceof Error ? err.name : "Error", message: err instanceof Error ? err.message : String(err) } });
+    const latencyMs = Date.now() - start;
+    steps.push(step("Gateway Error", "error", "error", String(error).slice(0, 300)));
+    await writeTrace(ctx, traceRecord({
+      trace_id: base.trace_id,
+      status: "error",
+      latency_ms: latencyMs,
+      client_protocol: base.client_protocol,
+      client_name: base.client_name,
+      incoming_model: base.incoming_model,
+      upstream_model: base.upstream_model,
+      upstream_provider_id: base.upstream_provider_id,
+      usage: {},
+      steps,
+      request: base.request,
+      response: { id: messageId, type: "message", role: "assistant", model: incomingModel, content: [{ type: "text", text: textParts.join("") }] },
+    }));
+    yield encodeDone();
+    return;
   }
   yield encodeSseEvent("content_block_stop", { index: 0 });
   yield encodeSseEvent("message_delta", {
-    delta: { stop_reason: error ? "error" : "stop", stop_sequence: null },
+    delta: { stop_reason: "stop", stop_sequence: null },
     usage: { output_tokens: 0 },
   });
   yield encodeSseEvent("message_stop", {});
@@ -867,16 +889,33 @@ function injectVisionEvidence(
   protocol: "anthropic" | "openai" | "openai_responses",
   body: Record<string, unknown>,
   steps: StepLike[],
+  plan?: FusionPlanConfig,
 ): Record<string, unknown> {
   const images = detectImages(protocol, body);
   if (images.length === 0) return payload;
+  const policy = plan?.image_policy ?? "evidence_only";
+
+  // "reject": refuse the request if any image is detected. This is the safest
+  // default for operators who don't want Fusion touching images at all.
+  if (policy === "reject") {
+    throw new FusionConfigError("fusion plan rejects image inputs (image_policy: reject)");
+  }
+
+  // "keep_for_vision_panels": leave the raw image blocks in the payload so
+  // vision-capable panel models can see them directly. No evidence injection,
+  // no stripping — the payload passes through as-is for the panels.
+  if (policy === "keep_for_vision_panels") {
+    steps.push(step("Vision Evidence", "worker", "success", `${images.length} image(s) kept for vision panels (image_policy: keep_for_vision_panels)`));
+    return payload;
+  }
+
+  // "evidence_only" (default): convert images to a textual evidence packet and
+  // strip the raw image blocks so non-vision panels don't reject the request.
   const packets = makeEvidencePackets(images, sessionKey(ctx.request, body));
   const evidenceText = evidenceSystemMessage(packets);
   if (!evidenceText) return payload;
   steps.push(step("Vision Evidence", "worker", "success", `${packets.length} image(s) -> evidence packet`));
   const injected = injectEvidenceIntoChatPayload(payload, evidenceText);
-  // Remove the raw image blocks now that a textual evidence packet carries the
-  // information — otherwise a non-vision panel rejects the request on the image.
   return stripImageBlocksFromChatPayload(injected);
 }
 
@@ -891,7 +930,13 @@ async function handleFusionAsAnthropic(
   steps: StepLike[],
 ): Promise<Response> {
   let fusionPayload = anthropicToOpenaiPayload(body, targetModel, "strip_for_non_anthropic_upstream", "openai").payload;
-  fusionPayload = injectVisionEvidence(ctx, fusionPayload, "anthropic", body, steps);
+  try {
+    fusionPayload = injectVisionEvidence(ctx, fusionPayload, "anthropic", body, steps, plan);
+  } catch (err) {
+    steps.push(step("Vision Evidence", "worker", "error", err instanceof Error ? err.message.slice(0, 300) : String(err)));
+    await writeFusionErrorTrace(ctx, err, traceId, "anthropic", "claude-code", incomingModel, targetModel, steps, body);
+    return fusionErrorResponse(err, traceId);
+  }
 
   if (!wantStream) {
     let result;
@@ -936,7 +981,13 @@ async function handleFusionAsOpenAI(
   wantStream: boolean,
   steps: StepLike[],
 ): Promise<Response> {
-  payload = injectVisionEvidence(ctx, payload, "openai", body, steps);
+  try {
+    payload = injectVisionEvidence(ctx, payload, "openai", body, steps, plan);
+  } catch (err) {
+    steps.push(step("Vision Evidence", "worker", "error", err instanceof Error ? err.message.slice(0, 300) : String(err)));
+    await writeFusionErrorTrace(ctx, err, traceId, "openai", "openai-client", incomingModel, targetModel, steps, body);
+    return fusionErrorResponse(err, traceId);
+  }
   if (!wantStream) {
     let result;
     try {
@@ -982,7 +1033,13 @@ async function handleFusionAsResponses(
   wantStream: boolean,
   steps: StepLike[],
 ): Promise<Response> {
-  payload = injectVisionEvidence(ctx, payload, "openai_responses", body, steps);
+  try {
+    payload = injectVisionEvidence(ctx, payload, "openai_responses", body, steps, plan);
+  } catch (err) {
+    steps.push(step("Vision Evidence", "worker", "error", err instanceof Error ? err.message.slice(0, 300) : String(err)));
+    await writeFusionErrorTrace(ctx, err, traceId, "openai_responses", "openai-client", incomingModel, targetModel, steps, body);
+    return fusionErrorResponse(err, traceId);
+  }
   if (!wantStream) {
     let result;
     try {
@@ -1057,12 +1114,10 @@ async function* fusionStreamAsAnthropic(
     yield encodeSseEvent("error", { type: "error", error: { type: "fusion_error", message: failedMessage } });
   }
 
-  // On failure, do NOT emit a successful end_turn/message_stop sequence — that would
-  // contradict the error frame. Close the content block and stop with an error reason.
+  // On failure, emit the error event then close immediately. We do NOT emit a
+  // fake message_delta with stop_reason:"error" + message_stop — some SDKs reject
+  // the non-standard stop_reason enum. The error event is the terminal signal.
   if (failedMessage) {
-    yield encodeSseEvent("content_block_stop", { index: 0 });
-    yield encodeSseEvent("message_delta", { delta: { stop_reason: "error", stop_sequence: null }, usage: { output_tokens: 0 } });
-    yield encodeSseEvent("message_stop", {});
     steps.push(step("Fusion Pipeline", "fusion", "error", failedMessage.slice(0, 300)));
     await writeTrace(ctx, traceRecord({
       trace_id: traceId, status: "error", latency_ms: 0,
@@ -1070,6 +1125,7 @@ async function* fusionStreamAsAnthropic(
       incoming_model: incomingModel, upstream_model: targetModel,
       usage: {}, steps, request: {}, response: { error: failedMessage },
     }));
+    yield encodeDone();
     return;
   }
 
@@ -1130,10 +1186,16 @@ async function* fusionStreamAsOpenAI(
     yield encodeData({ error: { message: failedMessage, type: "fusion_error" } });
   }
 
-  // On failure emit an error finish_reason instead of a clean "stop", then [DONE].
-  const finishReason = failedMessage ? "error" : "stop";
-  yield encodeData({ id: chatId, object: "chat.completion.chunk", created, model: incomingModel, choices: [{ index: 0, delta: {}, finish_reason: finishReason }] });
-  yield encodeDone();
+  // On success emit a clean finish_reason "stop", then [DONE]. On failure we
+  // skip the synthetic finish chunk entirely — the error data already signals
+  // failure, and a non-standard finish_reason:"error" may be rejected by some
+  // SDKs that validate the enum strictly.
+  if (failedMessage) {
+    yield encodeDone();
+  } else {
+    yield encodeData({ id: chatId, object: "chat.completion.chunk", created, model: incomingModel, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
+    yield encodeDone();
+  }
 
   if (failedMessage) {
     steps.push(step("Fusion Pipeline", "fusion", "error", failedMessage.slice(0, 300)));

@@ -232,3 +232,44 @@ describe("fusion timeout pass-through", () => {
     }
   });
 });
+
+describe("fusion concurrency limits", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("throws FusionConfigError when panel count exceeds max_panel_count", async () => {
+    const router = routerWithProviders([
+      { id: "p", name: "P", protocol: "openai", base_url: "https://x/v1", api_key: "k" },
+    ]);
+    vi.spyOn(providerClient, "callOpenAIChat")
+      .mockResolvedValue({ choices: [{ message: { role: "assistant", content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+    const bigPlan = { ...PLAN, panel_models: Array.from({ length: 5 }, (_, i) => ({ model: `m${i}` })), max_panel_count: 3 };
+    await expect(runFusionPipeline(router, bigPlan, { messages: [{ role: "user", content: "hi" }] })).rejects.toThrow(FusionConfigError);
+  });
+
+  it("never exceeds max_parallel_panels concurrent upstream calls", async () => {
+    const router = routerWithProviders([
+      { id: "p", name: "P", protocol: "openai", base_url: "https://x/v1", api_key: "k" },
+    ]);
+    let inflight = 0;
+    let maxObserved = 0;
+    vi.spyOn(providerClient, "callOpenAIChat").mockImplementation(async () => {
+      inflight++;
+      maxObserved = Math.max(maxObserved, inflight);
+      // Simulate latency so concurrency is observable.
+      await new Promise((r) => setTimeout(r, 10));
+      inflight--;
+      return { choices: [{ message: { role: "assistant", content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+    });
+    const widePlan = { ...PLAN, panel_models: Array.from({ length: 8 }, (_, i) => ({ model: `m${i}` })), max_parallel_panels: 3 };
+    await runFusionPipeline(router, widePlan, { messages: [{ role: "user", content: "hi" }] });
+    // maxObserved counts panels only (synth runs after all panels settle, when inflight=0).
+    expect(maxObserved).toBeLessThanOrEqual(3);
+  });
+});

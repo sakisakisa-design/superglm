@@ -143,6 +143,9 @@ export interface PanelModelSpec {
   temperature?: number;
 }
 
+export const MAX_PANEL_COUNT = 12;
+export const DEFAULT_MAX_PARALLEL_PANELS = 6;
+
 export interface FusionPlanConfig {
   strategy: "fusion" | "self_consistency";
   panel_models?: PanelModelSpec[];
@@ -154,6 +157,17 @@ export interface FusionPlanConfig {
   max_tokens_per_panel?: number;
   timeout_ms?: number;
   blocked_domains?: string[];
+  /** Hard cap on the number of panels expanded from panel_models / self_consistency. Default 12. */
+  max_panel_count?: number;
+  /** Max panels that may run in-flight at once. Default 6. */
+  max_parallel_panels?: number;
+  /**
+   * How to handle image blocks in the payload when Fusion is active.
+   * - "evidence_only" (default): convert images to a textual evidence packet and strip raw blocks.
+   * - "keep_for_vision_panels": keep image blocks so vision-capable panels can see them.
+   * - "reject": refuse the request with 400 if any image is detected.
+   */
+  image_policy?: "evidence_only" | "keep_for_vision_panels" | "reject";
 }
 
 export const PROFILE_MODEL_KEYS: Record<ModelRole, string> = {

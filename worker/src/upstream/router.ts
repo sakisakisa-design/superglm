@@ -173,6 +173,29 @@ export class ProviderRouter {
     }
   }
 
+  /**
+   * Streaming variant that also exposes the selected provider id, so callers that
+   * need trace attribution (e.g. Fusion synthesizer) can record which provider
+   * actually served the stream instead of falling back to a pinned-id guess.
+   */
+  async *streamOpenAIChatWithMeta(
+    payload: Record<string, unknown>,
+    targetModel: string,
+    opts: RouterOptions = {},
+  ): AsyncGenerator<{ chunk: string; providerId: string }, void, unknown> {
+    const prepared = await this.prepareOpenAIChatStream(payload, targetModel, opts);
+    const breaker = this.breaker(prepared.provider, targetModel);
+    try {
+      for await (const chunk of iterOpenAIChatStream(prepared.payload, prepared.provider, opts.timeoutMs)) {
+        yield { chunk, providerId: prepared.provider.id };
+      }
+      breaker.recordSuccess();
+    } catch (err) {
+      breaker.recordFailure();
+      throw err;
+    }
+  }
+
   status(): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     for (const [key, breaker] of this.breakers.entries()) out[key] = breaker.snapshot();

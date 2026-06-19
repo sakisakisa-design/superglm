@@ -85,3 +85,89 @@ describe("fusion debug gate (ALLOW_FUSION_DEBUG_OUTPUT)", () => {
     expect((body._fusion as { panel_responses: unknown }).panel_responses).toBeInstanceOf(Array);
   });
 });
+
+describe("fusion image_policy", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    mockCallOpenAI();
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  function bodyWithImage(): Record<string, unknown> {
+    return {
+      model: "fuse-test",
+      stream: false,
+      max_tokens: 100,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "what is this" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBOR" } },
+        ],
+      }],
+    };
+  }
+
+  it("rejects the request with 400 when image_policy is reject and an image is present", async () => {
+    const deps = makeCtx();
+    deps.fusionPlans!["fuse-test"] = { ...PLAN, image_policy: "reject" };
+    const req = new Request("https://gw/v1/messages", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(bodyWithImage()),
+    });
+    const ctx = { deps, request: req, path: "/v1/messages", method: "POST" };
+    const res = await handleAnthropicMessages(ctx, bodyWithImage());
+    expect(res.status).toBe(400);
+  });
+
+  it("keeps image blocks in the payload when image_policy is keep_for_vision_panels", async () => {
+    const spy = mockCallOpenAI();
+    const deps = makeCtx();
+    deps.fusionPlans!["fuse-test"] = { ...PLAN, image_policy: "keep_for_vision_panels" };
+    const req = new Request("https://gw/v1/messages", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(bodyWithImage()),
+    });
+    const ctx = { deps, request: req, path: "/v1/messages", method: "POST" };
+    await handleAnthropicMessages(ctx, bodyWithImage());
+    // The first callOpenAIChat call is a panel. Its payload should still contain
+    // the image block (not stripped, no evidence system message inserted).
+    const panelPayload = spy.mock.calls[0]![0] as Record<string, unknown>;
+    const msgs = panelPayload.messages as Array<Record<string, unknown>>;
+    const hasImage = msgs.some((m) => {
+      const c = m.content;
+      return Array.isArray(c) && c.some((b: Record<string, unknown>) => b.type === "image" || b.type === "image_url");
+    });
+    expect(hasImage).toBe(true);
+    // And no evidence system message should have been injected.
+    const hasEvidence = msgs.some((m) => m.role === "system" && typeof m.content === "string" && m.content.includes("[image"));
+    expect(hasEvidence).toBe(false);
+  });
+
+  it("strips image blocks and injects evidence by default (evidence_only)", async () => {
+    const spy = mockCallOpenAI();
+    const deps = makeCtx();
+    // PLAN has no image_policy set — defaults to evidence_only
+    const req = new Request("https://gw/v1/messages", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(bodyWithImage()),
+    });
+    const ctx = { deps, request: req, path: "/v1/messages", method: "POST" };
+    await handleAnthropicMessages(ctx, bodyWithImage());
+    const panelPayload = spy.mock.calls[0]![0] as Record<string, unknown>;
+    const msgs = panelPayload.messages as Array<Record<string, unknown>>;
+    // Image blocks should be gone.
+    const hasImage = msgs.some((m) => {
+      const c = m.content;
+      return Array.isArray(c) && c.some((b: Record<string, unknown>) => b.type === "image" || b.type === "image_url");
+    });
+    expect(hasImage).toBe(false);
+    // An evidence system message should have been injected.
+    const hasEvidence = msgs.some((m) => m.role === "system" && typeof m.content === "string" && m.content.length > 0 && m.content !== "you are a helpful assistant");
+    expect(hasEvidence).toBe(true);
+  });
+});
