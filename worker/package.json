@@ -5,24 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "wrangler deploy",
     "db:migrations:apply": "wrangler d1 migrations apply DB --remote",
     "cf:bootstrap": "node scripts/bootstrap-cloudflare.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "build": "vite build"
-  },
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "test": "vitest run"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240620.0",
-    "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.1",
     "typescript": "^5.5.4",
-    "vite": "^5.3.5",
     "vitest": "^1.6.0",
     "wrangler": "^4.102.0"
   },

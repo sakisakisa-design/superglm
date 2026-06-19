@@ -19,6 +19,9 @@ import { listTraces, getTrace } from "./api/traces";
 import { testConnection } from "./api/testConnection";
 import { claudeSmoke } from "./api/claudeSmoke";
 import { healthHandler } from "./api/health";
+import { listProviderPresets } from "./api/providerPresets";
+import { listModelCapabilities } from "./api/modelCapabilities";
+import { visionCheck } from "./api/visionCheck";
 import { authenticate, authDenied } from "./auth/auth";
 import { ConfigStore } from "./storage/configStore";
 import { ensureD1Schema, __resetD1SchemaForTest } from "./storage/d1";
@@ -138,6 +141,11 @@ async function serveApi(
   // ---- test connection / claude smoke ----
   if (path === "/api/test-connection" && method === "POST") return testConnection(ctx);
   if (path === "/api/claude-code/smoke" && method === "POST") return claudeSmoke(ctx);
+
+  // ---- provider presets / model capabilities / vision check ----
+  if (path === "/api/provider-presets" && method === "GET") return listProviderPresets(ctx);
+  if (path === "/api/model-capabilities" && method === "GET") return listModelCapabilities(ctx);
+  if (path === "/api/vision-check" && method === "POST") return visionCheck(ctx);
 
   return null;
 }

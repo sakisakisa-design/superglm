@@ -13,7 +13,7 @@ from the browser.
 ## What You Get
 
 - Cloudflare Worker API and proxy runtime under `worker/`
-- React + Vite dashboard served by Workers Static Assets
+- React dashboard (pre-built static assets) served by Workers Static Assets
 - D1 persistence for providers, aliases, traces, config, and gateway keys
 - Anthropic-compatible `/v1/messages` for Claude Code style clients
 - OpenAI-compatible `/openai/v1/chat/completions` and `/openai/v1/responses`
@@ -37,15 +37,15 @@ sync from upstream later.
 5. Leave the root directory as the repository root.
 6. Use production branch `main`.
 7. If Cloudflare shows resource setup, keep/create the D1 binding named `DB`.
-8. Set Build command to `npm run build`.
+8. Leave Build command empty.
 9. Set Deploy command to `npx wrangler deploy`.
 10. Add the runtime secret `SUPERDS_LOCAL_API_KEY`.
 11. Save and deploy.
 
-The build command installs Worker dependencies and runs Vite to bundle the React
-dashboard into `worker/dist/client/`. Wrangler then serves those files as static
-assets alongside the Worker API. The Worker creates the D1 tables it needs on
-first request, so first-time deploys do not need a local migration step.
+The dashboard is committed under `worker/assets` as pre-built static files, so
+the Cloudflare GitHub deployment does not need a separate build step. The Worker
+creates the D1 tables it needs on first request, so first-time deploys do not
+need a local migration step.
 
 If the first build says the `DB` binding is missing, create a D1 database in the
 Cloudflare dashboard, bind it to the Worker as `DB`, then retry the deployment.
@@ -140,8 +140,7 @@ Supported OpenAI-compatible routes:
 ```text
 worker/         Cloudflare Worker runtime, dashboard, D1 migrations, tests
 worker/src/     TypeScript Worker API and proxy
-worker/web/     React + Vite dashboard source
-worker/dist/    Vite build output (generated, not committed)
+worker/assets/  Pre-built React dashboard (babel-standalone, served as static assets)
 config/         Provider presets reference
 docs/           Deployment and architecture notes
 ```

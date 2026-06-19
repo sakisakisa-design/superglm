@@ -4,12 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "npm --prefix worker install && npm --prefix worker run build",
-    "deploy": "npm run build && wrangler deploy",
-    "cf:dry-run": "npm run build && wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "cf:dry-run": "wrangler deploy --dry-run",
     "worker:typecheck": "npm --prefix worker run typecheck",
-    "worker:test": "npm --prefix worker test",
-    "worker:build": "npm --prefix worker run build"
+    "worker:test": "npm --prefix worker test"
   },
   "devDependencies": {
     "wrangler": "^4.102.0"
