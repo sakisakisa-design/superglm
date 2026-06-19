@@ -26,28 +26,16 @@ dashboard, and configure providers from the browser.
 
 ## Deploy To Cloudflare
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sakisakisa-design/superglm/tree/main/worker)
+### Recommended: fork and connect your fork
 
-### One-click deploy
-
-Use the button above to deploy `worker/` directly from GitHub. Cloudflare will
-clone the Worker app into your GitHub account, provision the required D1 database,
-run the build/deploy command, and bind the resources to the Worker.
-
-During setup, provide a strong `SUPERDS_LOCAL_API_KEY`. This is the gateway admin
-key used by the hosted dashboard and by Claude/OpenAI-compatible clients.
-
-After deploy, open the Worker URL in your browser. The dashboard asks for that
-gateway key.
-
-### Cloudflare Dashboard GitHub deploy
-
-You can also deploy from the Cloudflare dashboard without using local Wrangler:
+For a real deployment, fork this repository first. Cloudflare should connect to
+your fork, because that gives your Worker a repository you can control, edit, and
+sync from upstream later. You do not need local Wrangler for this path:
 
 1. Open Cloudflare Dashboard -> Workers & Pages.
 2. Select Create application.
 3. Select Import a repository.
-4. Connect GitHub and choose `sakisakisa-design/superglm` or your fork.
+4. Connect GitHub and choose your fork of `sakisakisa-design/superglm`.
 5. Set the root directory to `worker`.
 6. Use production branch `main`.
 7. If Cloudflare shows resource setup, keep/create the D1 binding named `DB`.
@@ -65,13 +53,27 @@ Cloudflare dashboard, bind it to the Worker as `DB`, then retry the deployment.
 
 If the live Worker does not redeploy after a GitHub push, check:
 
-- Cloudflare is connected to the repo and branch you are pushing, not a separate
-  copy created by the Deploy to Cloudflare flow.
+- Cloudflare is connected to your fork and the branch you are pushing.
 - Workers & Pages -> your Worker -> Settings -> Builds shows GitHub connected.
 - Root directory is `worker`.
 - The Worker name matches `worker/wrangler.jsonc`; the default name is `superglm`.
 - Use Retry deployment / Deploy latest commit once and read the build log for the
   exact error.
+
+### Quick demo: Deploy to Cloudflare button
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sakisakisa-design/superglm/tree/main/worker)
+
+The button is useful for a quick trial. It may create an independent GitHub copy
+for your deployment, which means future pushes to `sakisakisa-design/superglm`
+will not redeploy your Worker automatically. For an editable deployment you can
+keep linked to GitHub, use the fork flow above.
+
+During setup, provide a strong `SUPERDS_LOCAL_API_KEY`. This is the gateway admin
+key used by the hosted dashboard and by Claude/OpenAI-compatible clients.
+
+After deploy, open the Worker URL in your browser. The dashboard asks for that
+gateway key.
 
 ### Local Wrangler deploy
 

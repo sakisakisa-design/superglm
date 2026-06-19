@@ -155,27 +155,16 @@ npx wrangler dev --local
 
 ## 7. Deploy
 
-### Deploy to Cloudflare button
+### Recommended: fork + Cloudflare Dashboard
 
-Use the README button, or open this URL directly:
-
-```text
-https://deploy.workers.cloudflare.com/?url=https://github.com/sakisakisa-design/superglm/tree/main/worker
-```
-
-Cloudflare will clone the Worker app, provision supported resources such as D1,
-run the deploy command, and bind the resources to the Worker. During setup,
-provide `SUPERDS_LOCAL_API_KEY` as a secret; this is the gateway key for the
-dashboard and client requests.
-
-### Cloudflare Dashboard + GitHub
-
-To deploy without local Wrangler:
+For a real deployment, fork this repository first and connect Cloudflare to your
+fork. This gives each deployer a repository they can edit, push to, and sync from
+upstream later. To deploy without local Wrangler:
 
 1. Open Cloudflare Dashboard -> Workers & Pages.
 2. Select Create application.
 3. Select Import a repository.
-4. Connect GitHub and choose `sakisakisa-design/superglm` or your fork.
+4. Connect GitHub and choose your fork of `sakisakisa-design/superglm`.
 5. Set root directory to `worker`.
 6. Set production branch to `main`.
 7. If Cloudflare shows resource setup, keep/create the D1 binding named `DB`.
@@ -192,10 +181,23 @@ If the first build says the `DB` binding is missing, create a D1 database in the
 Cloudflare dashboard, bind it to the Worker as `DB`, then retry the deployment.
 
 If a live Worker does not redeploy after a GitHub push, check that Cloudflare is
-connected to the same repo/branch you are pushing, root directory is `worker`,
-and the Worker name matches `worker/wrangler.jsonc` (`superglm` by default).
-Deploy Button flows may create a separate GitHub copy; pushes to the upstream
-repo will not automatically redeploy that copy.
+connected to your fork and the same branch you are pushing, root directory is
+`worker`, and the Worker name matches `worker/wrangler.jsonc` (`superglm` by
+default).
+
+### Quick demo: Deploy to Cloudflare button
+
+Use the README button, or open this URL directly:
+
+```text
+https://deploy.workers.cloudflare.com/?url=https://github.com/sakisakisa-design/superglm/tree/main/worker
+```
+
+Cloudflare may create an independent GitHub copy for this deployment. That is
+fine for a quick trial, but future pushes to `sakisakisa-design/superglm` will
+not automatically redeploy that copy. For a long-lived editable deployment, use
+the fork flow above. During setup, provide `SUPERDS_LOCAL_API_KEY` as a secret;
+this is the gateway key for the dashboard and client requests.
 
 ### Local Wrangler
 
