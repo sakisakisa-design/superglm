@@ -1,25 +1,98 @@
-# Super DeepSeek
+# superglm
 
 [中文说明](README.zh-CN.md)
 
-Super DeepSeek is a local gateway for using DeepSeek and other OpenAI-compatible models with Claude Code, Codex CLI, and OpenAI-compatible clients.
+superglm is a Cloudflare Worker edition of SuperDeepSeek: a public AI gateway
+with a hosted dashboard, persistent D1 configuration, Claude Code compatible
+endpoints, OpenAI-compatible endpoints, streaming, trace logs, alias routing, and
+billing-header sanitization.
 
-It is built for one practical goal: give strong text/code models a usable agent interface, including tool calls, Responses API compatibility, and a vision-worker path for image inputs.
+The original Python local gateway is still included for local development, but
+the main path for this repository is: fork it, deploy it to Cloudflare, open the
+dashboard, and configure providers from the browser.
 
-## Features
+## What You Get
 
-- Anthropic-compatible `/v1/messages` for Claude Code-style clients
-- OpenAI-compatible `/openai/v1/chat/completions`
-- OpenAI Responses-compatible `/openai/v1/responses`
-- Responses streaming and WebSocket support for Codex CLI
-- Tool-call history conversion between Responses and OpenAI Chat formats
-- `reasoning_content` passthrough for models that require thinking history
-- Vision worker: images are read by a configured vision model, then passed to the main model as text evidence
-- Local dashboard with provider, model, profile, trace, and capability views
+- Cloudflare Worker API and proxy runtime under `worker/`
+- Hosted React dashboard served by Workers Static Assets
+- D1 persistence for providers, aliases, traces, config, and gateway keys
+- Anthropic-compatible `/v1/messages` for Claude Code style clients
+- OpenAI-compatible `/openai/v1/chat/completions` and `/openai/v1/responses`
+- Streaming support for Anthropic/OpenAI-compatible responses
+- Trace logs with secret redaction
+- Alias routing with provider pinning and failover-friendly routing
+- Billing and identity header sanitization before upstream forwarding
+- Existing Python FastAPI local gateway kept intact under `backend/app`
 
-## Quick Start
+## Deploy To Cloudflare
 
-Local Python gateway:
+Prerequisites:
+
+- Node.js 20+
+- A Cloudflare account
+- Wrangler login already completed, or let Wrangler prompt during the commands
+
+From a fresh fork:
+
+```bash
+cd worker
+npm install
+npm run cf:bootstrap
+npx wrangler d1 migrations apply superdeepseek --remote
+npx wrangler secret put SUPERDS_LOCAL_API_KEY
+npm run deploy
+```
+
+`npm run cf:bootstrap` creates the D1 database and writes its `database_id` into
+`worker/wrangler.jsonc`. If you already created the D1 database manually, copy
+the `database_id` into `worker/wrangler.jsonc` instead.
+
+After deploy, open the Worker URL in your browser. The dashboard asks for the
+gateway key you stored in `SUPERDS_LOCAL_API_KEY`.
+
+## Configure Providers
+
+Use the hosted dashboard to add an upstream provider:
+
+- `id`: a short provider id, for example `siliconflow`
+- `name`: display name
+- `protocol`: `openai` or `anthropic`
+- `base_url`: OpenAI/Anthropic-compatible upstream base URL
+- `api_key`: upstream provider key
+
+Then add aliases that map public model names to real upstream models. Clients
+send requests to the alias; superglm resolves the upstream provider/model.
+
+## Claude Code
+
+```bash
+export ANTHROPIC_BASE_URL="https://<your-worker>.workers.dev"
+export ANTHROPIC_API_KEY="<your superglm gateway key>"
+claude
+```
+
+Supported Anthropic-compatible routes:
+
+- `POST /v1/messages`
+- `POST /v1/messages/count_tokens`
+- `GET /v1/models`
+
+## OpenAI-Compatible Clients
+
+```bash
+export OPENAI_BASE_URL="https://<your-worker>.workers.dev/openai/v1"
+export OPENAI_API_KEY="<your superglm gateway key>"
+```
+
+Supported OpenAI-compatible routes:
+
+- `GET /openai/v1/models`
+- `POST /openai/v1/chat/completions`
+- `POST /openai/v1/responses`
+
+## Local Python Gateway
+
+The original local edition is still available:
 
 ```bash
 cp .env.example .env
@@ -33,106 +106,38 @@ Open:
 http://127.0.0.1:8787
 ```
 
-Cloudflare Worker edition:
-
-```bash
-cd worker
-npm install
-npm run cf:bootstrap
-npx wrangler d1 migrations apply superdeepseek --remote
-npx wrangler secret put SUPERDS_LOCAL_API_KEY
-npm run deploy
-```
-
-See [docs/cloudflare-worker-edition.md](docs/cloudflare-worker-edition.md) for the
-hosted dashboard, D1 persistence, and public gateway deployment path.
-
-## Configure Keys
-
-Put upstream keys in `.env`:
-
-```bash
-DEEPSEEK_API_KEY=
-OPENROUTER_API_KEY=
-MIMO_API_KEY=
-SILICONFLOW_API_KEY=
-KIMI_API_KEY=
-```
-
-The local gateway key defaults to:
-
-```bash
-SUPERDS_LOCAL_API_KEY=superds-local-change-me
-```
-
-Change it before exposing the gateway outside localhost.
-
-## Default Model Plan
-
-The bundled `config/superds.json` keeps a ready-to-use default profile:
-
-| Role | Default |
-| --- | --- |
-| Main | `deepseek-v4-pro` |
-| Fast tool / vision worker | `Qwen/Qwen3.6-27B` via SiliconFlow |
-| Large / long context | `deepseek-v4-pro` |
-| Verifier | `kimi-k2.6` |
-| Fallback | `anthropic/claude-haiku-4.5` via OpenRouter |
-
-You can edit providers and role mappings in the dashboard.
-
-## Claude Code
+For local clients:
 
 ```bash
 export ANTHROPIC_BASE_URL="http://127.0.0.1:8787"
 export ANTHROPIC_API_KEY="superds-local-change-me"
-```
 
-Then use Claude-like aliases such as:
-
-- `claude-haiku-4-5`
-- `claude-sonnet-4-6`
-- `claude-opus-4-7`
-- `super-main`
-- `super-verifier`
-
-## Codex CLI
-
-Install the SuperDS provider into `~/.codex/config.toml`:
-
-```bash
-python3 scripts/install_codex_provider.py
-export OPENAI_API_KEY="superds-local-change-me"
-```
-
-Run Codex:
-
-```bash
-codex exec --model super-main "Reply with CODEX_OK"
-codex review --uncommitted
-```
-
-If WebSocket mode is unstable on your machine, force HTTP/SSE:
-
-```bash
-python3 scripts/install_codex_provider.py --no-websockets
-```
-
-## OpenAI-Compatible Clients
-
-```bash
 export OPENAI_BASE_URL="http://127.0.0.1:8787/openai/v1"
 export OPENAI_API_KEY="superds-local-change-me"
 ```
 
-Available endpoints:
+## Repository Layout
 
-- `GET /openai/v1/models`
-- `POST /openai/v1/chat/completions`
-- `POST /openai/v1/responses`
-- `WS /openai/v1/responses`
+```text
+worker/   Cloudflare Worker runtime, dashboard, D1 migrations, tests
+backend/  Existing Python FastAPI local gateway
+config/   Local edition default config and provider presets
+docs/     Cloudflare Worker deployment and architecture notes
+tests/    Local Python gateway tests
+```
 
 ## Tests
+
+Worker edition:
+
+```bash
+cd worker
+npm run typecheck
+npm test
+npm run build
+```
+
+Local Python edition:
 
 ```bash
 python3 -m unittest discover -s tests
@@ -140,6 +145,7 @@ python3 -m unittest discover -s tests
 
 ## Notes
 
-- Runtime traces and visual evidence are stored under `data/` and are ignored by git.
-- `config/superds.json` is safe to commit after replacing real provider keys with empty strings.
-- If no upstream key is configured, SuperDS starts normally and returns local mock responses.
+- Do not commit real upstream provider keys.
+- Rotate any key that was pasted into chat, logs, or screenshots.
+- Runtime traces and local evidence are stored under `data/`, which is ignored by git.
+- Full Worker documentation: [docs/cloudflare-worker-edition.md](docs/cloudflare-worker-edition.md).
