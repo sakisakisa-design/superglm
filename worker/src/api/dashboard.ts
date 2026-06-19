@@ -40,7 +40,7 @@ export async function loadConfig(env: Env): Promise<SuperDeepSeekConfig> {
     config = safeParse<SuperDeepSeekConfig>(env.CONFIG_JSON, { ...DEFAULT_CONFIG });
   }
 
-  const store = new ConfigStore(env.DB, env.ENCRYPTION_KEY);
+  const store = new ConfigStore(env.DB, env.ENCRYPTION_KEY, isTruthy(env.REQUIRE_SECRET_ENCRYPTION));
   try {
     config.providers = await store.listProviderProfiles();
   } catch {
@@ -65,7 +65,7 @@ export async function loadConfig(env: Env): Promise<SuperDeepSeekConfig> {
  * so routing stays consistent with the dashboard view.
  */
 export async function saveConfig(env: Env, config: SuperDeepSeekConfig): Promise<void> {
-  const store = new ConfigStore(env.DB, env.ENCRYPTION_KEY);
+  const store = new ConfigStore(env.DB, env.ENCRYPTION_KEY, isTruthy(env.REQUIRE_SECRET_ENCRYPTION));
   const existingProviders = await safeListProviders(store);
   const existingById = new Map(existingProviders.map((p) => [p.id, p]));
   config.providers = config.providers.map((provider) => {
@@ -136,6 +136,11 @@ async function safeListProviders(store: ConfigStore): Promise<ProviderConfig[]> 
   } catch {
     return [];
   }
+}
+
+function isTruthy(v: string | undefined): boolean {
+  if (!v) return false;
+  return v === "1" || v.toLowerCase() === "true";
 }
 
 function isPreserveKeyValue(key: string | undefined): boolean {

@@ -15,6 +15,8 @@ import { UpstreamStatusError, callOpenAIChat, iterOpenAIChatStream } from "./pro
 export interface RouterOptions {
   pinnedProviderId?: string | undefined;
   forceRole?: string | undefined;
+  /** When set, only providers speaking this protocol are eligible (e.g. Fusion is OpenAI-only). */
+  requireProtocol?: "openai" | "anthropic" | undefined;
 }
 
 export interface RoutedCall {
@@ -44,9 +46,16 @@ export class ProviderRouter {
     private readonly breakerConfig = DEFAULT_BREAKER_CONFIG,
   ) {}
 
-  async resolveCandidates(targetModel: string, pinnedProviderId?: string): Promise<ProviderConfig[]> {
+  async resolveCandidates(
+    targetModel: string,
+    pinnedProviderId?: string,
+    requireProtocol?: "openai" | "anthropic",
+  ): Promise<ProviderConfig[]> {
     const providers = await this.store.listProviderProfiles();
-    const enabled = providers.filter((p) => p.enabled !== false);
+    let enabled = providers.filter((p) => p.enabled !== false);
+    if (requireProtocol) {
+      enabled = enabled.filter((p) => (p.protocol ?? "openai") === requireProtocol);
+    }
     if (pinnedProviderId) {
       const pinned = enabled.find((p) => p.id === pinnedProviderId);
       if (pinned) return [pinned];
@@ -56,8 +65,11 @@ export class ProviderRouter {
       return models.length === 0 || models.includes(targetModel);
     });
     if (matching.length > 0) return this.roundRobin(targetModel, matching);
-    // Fallback: route to every enabled provider (mirrors local edition passthrough).
-    return this.roundRobin(targetModel, enabled.length > 0 ? enabled : providers);
+    // Fallback: only fall back to the already-filtered (enabled / protocol-correct) set.
+    // Falling back to the raw provider list would re-include disabled providers and
+    // (when requireProtocol is set) bypass the protocol filter (e.g. sending an
+    // Anthropic-direct request to /v1/chat/completions).
+    return this.roundRobin(targetModel, enabled);
   }
 
   /** Non-streaming OpenAI Chat call with failover. */
@@ -66,7 +78,7 @@ export class ProviderRouter {
     targetModel: string,
     opts: RouterOptions = {},
   ): Promise<RoutedCall> {
-    const candidates = await this.resolveCandidates(targetModel, opts.pinnedProviderId);
+    const candidates = await this.resolveCandidates(targetModel, opts.pinnedProviderId, opts.requireProtocol);
     const attempts: RouteAttempt[] = [];
     let lastError: unknown = null;
     for (const provider of candidates) {
@@ -115,7 +127,7 @@ export class ProviderRouter {
     targetModel: string,
     opts: RouterOptions = {},
   ): Promise<PreparedStream> {
-    const candidates = await this.resolveCandidates(targetModel, opts.pinnedProviderId);
+    const candidates = await this.resolveCandidates(targetModel, opts.pinnedProviderId, opts.requireProtocol);
     const attempts: RouteAttempt[] = [];
     for (const provider of candidates) {
       const breaker = this.breaker(provider, targetModel);

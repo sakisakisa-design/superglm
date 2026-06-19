@@ -40,6 +40,7 @@ export class ConfigStore {
   constructor(
     private readonly db: D1Database,
     private readonly encryptionKey?: string,
+    private readonly requireEncryption = false,
   ) {}
 
   async listProviderProfiles(): Promise<ProviderConfig[]> {
@@ -62,8 +63,13 @@ export class ConfigStore {
 
   async upsertProviderProfile(profile: ProviderConfig): Promise<void> {
     let apiKey = profile.api_key ?? null;
-    if (apiKey && this.encryptionKey) {
-      apiKey = ENC_PREFIX + (await encryptSecret(apiKey, this.encryptionKey));
+    if (apiKey) {
+      if (this.requireEncryption && !this.encryptionKey) {
+        throw new SecretDecryptError("REFUSING to store plaintext provider api_key: ENCRYPTION_KEY is not configured");
+      }
+      if (this.encryptionKey) {
+        apiKey = ENC_PREFIX + (await encryptSecret(apiKey, this.encryptionKey));
+      }
     }
     await this.db
       .prepare(
@@ -154,13 +160,26 @@ async function providerFromRow(row: ProviderProfileRow, encryptionKey?: string):
   return provider;
 }
 
+/** Raised when an encrypted secret can't be decrypted (missing/wrong ENCRYPTION_KEY). */
+export class SecretDecryptError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SecretDecryptError";
+  }
+}
+
 async function decryptApiKey(stored: string, encryptionKey?: string): Promise<string> {
   if (!stored.startsWith(ENC_PREFIX)) return stored;
-  if (!encryptionKey) return stored;
+  // The value is ciphertext. Without a key we cannot recover it; returning the
+  // ciphertext as-is would later be sent upstream as a Bearer token and surface
+  // as a confusing 401. Fail loudly instead.
+  if (!encryptionKey) {
+    throw new SecretDecryptError("provider api_key is encrypted but ENCRYPTION_KEY is not configured");
+  }
   try {
     return await decryptSecret(stored.slice(ENC_PREFIX.length), encryptionKey);
   } catch {
-    return stored;
+    throw new SecretDecryptError("failed to decrypt provider api_key — ENCRYPTION_KEY may be wrong");
   }
 }
 

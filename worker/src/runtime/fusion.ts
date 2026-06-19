@@ -15,8 +15,23 @@
 
 import type { FusionPlanConfig, PanelModelSpec } from "../types/config";
 import type { ProviderRouter } from "../upstream/router";
-import { callOpenAIChat, iterOpenAIChatStream } from "../upstream/providerClient";
 import { openaiStreamDelta } from "../adapters/openaiOut";
+
+/** Raised when a fusion plan is structurally invalid (no panels). Surfaces as 400. */
+export class FusionConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FusionConfigError";
+  }
+}
+
+/** Raised when every panel fails and there is nothing to synthesize. Surfaces as 502. */
+export class FusionAllPanelsFailedError extends Error {
+  constructor(message = "all panel models failed") {
+    super(message);
+    this.name = "FusionAllPanelsFailedError";
+  }
+}
 
 export interface PanelResponse {
   provider_id: string;
@@ -48,6 +63,21 @@ export type FusionStreamEvent =
 const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_TIMEOUT = 120000;
 
+/** Per-panel content cap when persisting panel responses into a trace. */
+const PANEL_TRACE_CONTENT_CAP = 4000;
+
+/**
+ * Shrink panel responses for trace storage: truncate each panel's content so a
+ * handful of long panels can't blow up the D1 response_json blob, and so internal
+ * drafts aren't stored at full length.
+ */
+export function panelResponsesForTrace(panels: PanelResponse[]): PanelResponse[] {
+  return panels.map((p) => {
+    if (p.content.length <= PANEL_TRACE_CONTENT_CAP) return p;
+    return { ...p, content: p.content.slice(0, PANEL_TRACE_CONTENT_CAP) + "…[truncated]" };
+  });
+}
+
 function extractText(resp: Record<string, unknown>): string {
   const choices = resp.choices as Array<Record<string, unknown>> | undefined;
   if (choices && choices.length > 0) {
@@ -71,26 +101,27 @@ async function callPanel(
   model: string,
   providerId: string | undefined,
   maxTokens: number,
-  timeoutMs: number,
+  _timeoutMs: number,
 ): Promise<PanelResponse> {
   const start = Date.now();
-  const panelPayload = { ...payload, model, max_tokens: maxTokens, stream: false };
+  const panelPayload = { ...payload, max_tokens: maxTokens, stream: false };
   try {
-    const candidates = await router.resolveCandidates(model, providerId);
-    const provider = candidates[0];
-    if (!provider) {
-      return { provider_id: providerId ?? "?", model, status: "error", latency_ms: Date.now() - start, tokens_in: 0, tokens_out: 0, content: "", error: "no provider candidates" };
-    }
-    const response = await callOpenAIChat(panelPayload, provider, timeoutMs);
-    const usage = extractUsage(response);
+    // Route through the failover-aware path so panels get the same circuit-breaker
+    // and provider-rotation resilience as the normal single-model path. Fusion is
+    // OpenAI-only, so non-OpenAI providers are filtered out as candidates.
+    const routed = await router.callOpenAIChatWithFailover(panelPayload, model, {
+      pinnedProviderId: providerId,
+      requireProtocol: "openai",
+    });
+    const usage = extractUsage(routed.response);
     return {
-      provider_id: provider.id,
+      provider_id: routed.provider.id,
       model,
       status: "success",
       latency_ms: Date.now() - start,
       tokens_in: usage.in,
       tokens_out: usage.out,
-      content: extractText(response),
+      content: extractText(routed.response),
     };
   } catch (err) {
     const isTimeout = err instanceof Error && err.name === "TimeoutError";
@@ -148,6 +179,14 @@ async function runPanels(
   const messages = (basePayload.messages as unknown[]) ?? [];
   const specs = buildPanelSpecs(plan);
 
+  if (specs.length === 0) {
+    throw new FusionConfigError(
+      plan.strategy === "self_consistency"
+        ? "fusion self_consistency plan has no model/samples configured"
+        : "fusion plan has no panel_models configured",
+    );
+  }
+
   const panelPromises = specs.map((spec) =>
     callPanel(router, { ...basePayload, temperature: spec.temperature ?? 0.7 }, spec.model, spec.provider_id, maxTokens, timeoutMs),
   );
@@ -167,44 +206,47 @@ export async function runFusionPipeline(
 ): Promise<FusionResult> {
   const start = Date.now();
   const maxTokens = plan.max_tokens_per_panel ?? DEFAULT_MAX_TOKENS;
-  const timeoutMs = plan.timeout_ms ?? DEFAULT_TIMEOUT;
   const basePayload = { ...payload };
   delete basePayload.stream;
 
   const { responses: panelResponses, messages } = await runPanels(router, plan, basePayload);
 
+  // If every panel failed there is nothing to synthesize. Fail loudly instead of
+  // returning a 200 with an empty body (which looks like the model going silent).
+  if (!panelResponses.some((r) => r.status === "success" && r.content)) {
+    throw new FusionAllPanelsFailedError();
+  }
+
   let synthesizedContent = "";
-  if (panelResponses.some((r) => r.status === "success" && r.content)) {
-    const synthPrompt = buildSynthPrompt(panelResponses, messages);
-    try {
-      const synthPayload = {
-        ...basePayload,
-        model: plan.synthesizer_model,
-        messages: [{ role: "user", content: synthPrompt }],
-        max_tokens: maxTokens,
-        temperature: 0.5,
-        stream: false,
-      };
-      const synthCandidates = await router.resolveCandidates(plan.synthesizer_model, plan.synthesizer_provider_id);
-      const synthProvider = synthCandidates[0];
-      if (synthProvider) {
-        const synthResp = await callOpenAIChat(synthPayload, synthProvider, timeoutMs);
-        synthesizedContent = extractText(synthResp);
-        const usage = extractUsage(synthResp);
-        panelResponses.push({
-          provider_id: synthProvider.id,
-          model: plan.synthesizer_model,
-          status: "success",
-          latency_ms: 0,
-          tokens_in: usage.in,
-          tokens_out: usage.out,
-          content: synthesizedContent,
-        });
-      }
-    } catch {
-      const bestPanel = panelResponses.filter((r) => r.status === "success").sort((a, b) => b.content.length - a.content.length)[0];
-      synthesizedContent = bestPanel?.content ?? "";
-    }
+  const synthPrompt = buildSynthPrompt(panelResponses, messages);
+  try {
+    const synthPayload = {
+      ...basePayload,
+      messages: [{ role: "user", content: synthPrompt }],
+      max_tokens: maxTokens,
+      temperature: 0.5,
+      stream: false,
+    };
+    const routed = await router.callOpenAIChatWithFailover(synthPayload, plan.synthesizer_model, {
+      pinnedProviderId: plan.synthesizer_provider_id,
+      requireProtocol: "openai",
+    });
+    synthesizedContent = extractText(routed.response);
+    const usage = extractUsage(routed.response);
+    panelResponses.push({
+      provider_id: routed.provider.id,
+      model: plan.synthesizer_model,
+      status: "success",
+      latency_ms: 0,
+      tokens_in: usage.in,
+      tokens_out: usage.out,
+      content: synthesizedContent,
+    });
+  } catch {
+    // Synthesizer failed but panels succeeded: fall back to the best panel answer
+    // so the client still gets a usable, non-empty response.
+    const bestPanel = panelResponses.filter((r) => r.status === "success").sort((a, b) => b.content.length - a.content.length)[0];
+    synthesizedContent = bestPanel?.content ?? "";
   }
 
   const totalTokensIn = panelResponses.reduce((sum, r) => sum + r.tokens_in, 0);
@@ -228,7 +270,6 @@ export async function* runFusionStream(
 ): AsyncGenerator<FusionStreamEvent, void, unknown> {
   const start = Date.now();
   const maxTokens = plan.max_tokens_per_panel ?? DEFAULT_MAX_TOKENS;
-  const timeoutMs = plan.timeout_ms ?? DEFAULT_TIMEOUT;
   const basePayload = { ...payload };
   delete basePayload.stream;
 
@@ -238,16 +279,17 @@ export async function* runFusionStream(
     yield { type: "panel_done", response: r };
   }
 
-  // 2. Synthesizer streaming
+  // 2. Synthesizer streaming. If every panel failed there is nothing to
+  // synthesize: emit a terminal error and return WITHOUT a done event, so the
+  // outer wrapper closes the stream as a failure (no success/completed frame).
   if (!panelResponses.some((r) => r.status === "success" && r.content)) {
-    yield { type: "error", message: "all panel responses failed" };
+    yield { type: "error", message: "all panel models failed" };
     return;
   }
 
   const synthPrompt = buildSynthPrompt(panelResponses, messages);
   const synthPayload = {
     ...basePayload,
-    model: plan.synthesizer_model,
     messages: [{ role: "user", content: synthPrompt }],
     max_tokens: maxTokens,
     temperature: 0.5,
@@ -256,23 +298,26 @@ export async function* runFusionStream(
 
   yield { type: "synth_start" };
 
+  const synthProviderId = plan.synthesizer_provider_id ?? "?";
+  let streamedAny = false;
   try {
-    const synthCandidates = await router.resolveCandidates(plan.synthesizer_model, plan.synthesizer_provider_id);
-    const synthProvider = synthCandidates[0];
-    if (!synthProvider) {
-      throw new Error("no synthesizer provider available");
-    }
     let synthTokensOut = 0;
-    for await (const data of iterOpenAIChatStream(synthPayload, synthProvider, timeoutMs)) {
+    // Route through streamOpenAIChat so the synthesizer gets circuit-breaker
+    // tracking and OpenAI-only provider filtering like the panels.
+    for await (const data of router.streamOpenAIChat(synthPayload, plan.synthesizer_model, {
+      pinnedProviderId: plan.synthesizer_provider_id,
+      requireProtocol: "openai",
+    })) {
       const { text } = openaiStreamDelta(data);
       if (text) {
+        streamedAny = true;
         synthTokensOut += Math.ceil(text.length / 4);
         yield { type: "synth_delta", text };
       }
       if (data === "[DONE]") break;
     }
     panelResponses.push({
-      provider_id: synthProvider.id,
+      provider_id: synthProviderId,
       model: plan.synthesizer_model,
       status: "success",
       latency_ms: 0,
@@ -281,11 +326,15 @@ export async function* runFusionStream(
       content: "",
     });
   } catch (err) {
+    // Synthesizer failed. If we already streamed partial text we cannot cleanly
+    // restart, so surface an error; otherwise fall back to the best panel answer
+    // so the client still gets a complete, usable response.
     const bestPanel = panelResponses.filter((r) => r.status === "success").sort((a, b) => b.content.length - a.content.length)[0];
-    if (bestPanel) {
+    if (!streamedAny && bestPanel) {
       yield { type: "synth_delta", text: bestPanel.content };
     } else {
       yield { type: "error", message: err instanceof Error ? err.message : String(err) };
+      return;
     }
   }
 

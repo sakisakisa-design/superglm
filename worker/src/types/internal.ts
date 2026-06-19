@@ -121,5 +121,7 @@ export interface Env {
   DB: D1Database;
   ASSETS?: Fetcher;
   ENCRYPTION_KEY?: string;
+  /** When "1" / "true", refuse to store provider api_keys unless ENCRYPTION_KEY is set. */
+  REQUIRE_SECRET_ENCRYPTION?: string;
   [key: string]: unknown;
 }

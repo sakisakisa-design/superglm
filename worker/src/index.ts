@@ -56,12 +56,17 @@ let cachedSingletons: Singletons | null = null;
 
 function getSingletons(env: Env): Singletons {
   if (!cachedSingletons) {
-    const configStore = new ConfigStore(env.DB, env.ENCRYPTION_KEY);
+    const configStore = new ConfigStore(env.DB, env.ENCRYPTION_KEY, isTruthy(env.REQUIRE_SECRET_ENCRYPTION));
     const traceStore = new TraceStore(env.DB);
     const router = new ProviderRouter(configStore);
     cachedSingletons = { configStore, traceStore, router };
   }
   return cachedSingletons;
+}
+
+function isTruthy(v: string | undefined): boolean {
+  if (!v) return false;
+  return v === "1" || v.toLowerCase() === "true";
 }
 
 /** Test hook: reset the module-level singleton cache (so tests get isolated state). */

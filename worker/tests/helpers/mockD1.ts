@@ -43,7 +43,7 @@ export class MockD1 {
 
   constructor(opts: MockD1Options = {}) {
     this.configValue = opts.configValue ?? "";
-    for (const p of opts.providers ?? []) this.providers.set(String(p.id), { ...p });
+    for (const p of opts.providers ?? []) this.providers.set(String(p.id), { enabled: 1, ...p });
     for (const a of opts.aliases ?? []) this.aliases.set(String(a.alias), { ...a });
     for (const t of opts.traces ?? []) this.traces.set(String(t.request_id), { ...t });
     this.apiKeys = opts.apiKeys ?? [];
