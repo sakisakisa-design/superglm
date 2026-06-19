@@ -22,7 +22,7 @@ export function LockScreen({ initialError = "" }: { initialError?: string }) {
       <form className="lock-card" onSubmit={submit}>
         <div className="brand" style={{ justifyContent: "center", padding: "0 0 8px" }}>
           <span className="dot" />
-          <span>SuperDeepSeek</span>
+          <span>superglm</span>
         </div>
         <h1>Dashboard locked</h1>
         <p className="sub">Enter the gateway admin key to manage providers, aliases, and traces.</p>

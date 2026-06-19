@@ -65,14 +65,23 @@ export async function loadConfig(env: Env): Promise<SuperDeepSeekConfig> {
  * so routing stays consistent with the dashboard view.
  */
 export async function saveConfig(env: Env, config: SuperDeepSeekConfig): Promise<void> {
+  const store = new ConfigStore(env.DB);
+  const existingProviders = await safeListProviders(store);
+  const existingById = new Map(existingProviders.map((p) => [p.id, p]));
+  config.providers = config.providers.map((provider) => {
+    const existing = existingById.get(provider.id);
+    if (existing?.api_key && isPreserveKeyValue(provider.api_key)) {
+      return { ...provider, api_key: existing.api_key };
+    }
+    return provider;
+  });
+
   await env.DB.prepare(
     "INSERT INTO config (id, value, updated_at) VALUES ('singleton', ?, datetime('now')) " +
       "ON CONFLICT(id) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
   )
     .bind(JSON.stringify(config))
     .run();
-
-  const store = new ConfigStore(env.DB);
 
   // Sync providers: upsert all in the config, delete normalized rows no longer present.
   const keepProviderIds = new Set(config.providers.map((p) => p.id));
@@ -107,6 +116,20 @@ export async function saveConfig(env: Env, config: SuperDeepSeekConfig): Promise
     if (typeof ext.provider_id === "string") stored.provider_id = ext.provider_id;
     await store.upsertAlias(stored);
   }
+}
+
+async function safeListProviders(store: ConfigStore): Promise<ProviderConfig[]> {
+  try {
+    return await store.listProviderProfiles();
+  } catch {
+    return [];
+  }
+}
+
+function isPreserveKeyValue(key: string | undefined): boolean {
+  if (key == null) return true;
+  const trimmed = key.trim();
+  return trimmed === "" || trimmed === "****" || /^sk-\*{4}.{4}$/.test(trimmed);
 }
 
 export function publicConfig(config: SuperDeepSeekConfig): SuperDeepSeekConfig {

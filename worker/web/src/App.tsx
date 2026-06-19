@@ -4,9 +4,13 @@ import "./styles.css";
 import { Layout, type Tab } from "./components/Layout";
 import { LockScreen } from "./components/LockScreen";
 import { Overview } from "./pages/Overview";
+import { Setup } from "./pages/Setup";
 import { Providers } from "./pages/Providers";
-import { Aliases } from "./pages/Aliases";
+import { Profiles } from "./pages/Profiles";
+import { Claude } from "./pages/Claude";
 import { Traces } from "./pages/Traces";
+import { Sanitizer } from "./pages/Sanitizer";
+import { Settings } from "./pages/Settings";
 import { hasKey, onAuthChange } from "./auth";
 import { AuthError } from "./api";
 
@@ -41,10 +45,14 @@ function App() {
 
   return (
     <Layout tab={tab} setTab={setTab}>
-      {tab === "overview" && <Overview />}
+      {tab === "overview" && <Overview goto={setTab} />}
+      {tab === "setup" && <Setup goto={setTab} />}
       {tab === "providers" && <Providers />}
-      {tab === "aliases" && <Aliases />}
+      {tab === "profiles" && <Profiles />}
+      {tab === "claude" && <Claude />}
       {tab === "traces" && <Traces />}
+      {tab === "sanitizer" && <Sanitizer />}
+      {tab === "settings" && <Settings />}
     </Layout>
   );
 }

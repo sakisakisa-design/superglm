@@ -42,6 +42,18 @@ export interface ProviderRow {
   enabled?: boolean;
 }
 
+export interface ProfileRow {
+  id: string;
+  name: string;
+  main_model?: string;
+  fast_tool_model?: string;
+  large_model?: string;
+  verifier_model?: string;
+  vision_model?: string;
+  fallback_model?: string;
+  [key: string]: unknown;
+}
+
 export interface AliasRow {
   id: string;
   alias: string;
@@ -75,13 +87,39 @@ export interface Overview {
   stats: { providers: number; aliases: number; traces: number };
 }
 
+export interface GatewayConfig {
+  server?: { public_base_url?: string; host?: string; port?: number };
+  security?: { local_api_key?: string; bind_localhost_only?: boolean; redact_secrets_in_logs?: boolean };
+  runtime?: { mode?: string; default_profile?: string; trace_retention_days?: number; image_policy?: string };
+  claude_code_compat?: {
+    enabled?: boolean;
+    billing_header_policy?: string;
+    expose_claude_aliases?: boolean;
+    require_haiku_alias?: boolean;
+  };
+  providers: ProviderRow[];
+  profiles: ProfileRow[];
+  models: Array<Record<string, unknown>>;
+  model_aliases: AliasRow[];
+  [key: string]: unknown;
+}
+
 export const api = {
   overview: () => getJson<Overview>("/api/overview"),
   health: () => getJson<{ ok: boolean; service: string; time: string }>("/api/health", { public: true }),
+  getConfig: () => getJson<GatewayConfig>("/api/config"),
+  saveConfig: (config: GatewayConfig) => sendJson<GatewayConfig>("PUT", "/api/config", config),
 
   listProviders: () => getJson<{ providers: ProviderRow[] }>("/api/providers"),
   saveProvider: (p: Partial<ProviderRow>) => sendJson<{ id: string }>("POST", "/api/providers", p),
   deleteProvider: (id: string) => sendJson<{ deleted: string }>("DELETE", `/api/providers/${encodeURIComponent(id)}`),
+
+  listProfiles: () => getJson<{ profiles: ProfileRow[] }>("/api/profiles"),
+  saveProfile: (p: Partial<ProfileRow>) =>
+    p.id
+      ? sendJson<ProfileRow>("PUT", `/api/profiles/${encodeURIComponent(p.id)}`, p)
+      : sendJson<ProfileRow>("POST", "/api/profiles", p),
+  deleteProfile: (id: string) => sendJson<{ deleted: string }>("DELETE", `/api/profiles/${encodeURIComponent(id)}`),
 
   listAliases: () => getJson<{ aliases: AliasRow[] }>("/api/aliases"),
   saveAlias: (a: Partial<AliasRow>) => sendJson<AliasRow>("POST", "/api/aliases", a),

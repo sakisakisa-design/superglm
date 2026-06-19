@@ -43,6 +43,33 @@ describe("config <-> normalized table consistency", () => {
     expect(await store.listProviderProfiles()).toHaveLength(0);
   });
 
+  it("saveConfig preserves existing provider keys when the dashboard sends masked keys", async () => {
+    const e = env();
+    const store = new ConfigStore(e.DB);
+    await store.upsertProviderProfile({
+      id: "deepseek",
+      name: "DeepSeek",
+      protocol: "openai",
+      base_url: "https://api.deepseek.com/v1",
+      api_key: "test-provider-secret-12345678",
+    });
+    await saveConfig(e, {
+      ...BASE,
+      providers: [
+        {
+          id: "deepseek",
+          name: "DeepSeek Cloud",
+          protocol: "openai",
+          base_url: "https://api.deepseek.com/v1",
+          api_key: "sk-****5678",
+        },
+      ],
+    });
+    const saved = await store.getProviderProfile("deepseek");
+    expect(saved?.api_key).toBe("test-provider-secret-12345678");
+    expect(saved?.name).toBe("DeepSeek Cloud");
+  });
+
   it("loadConfig hydrates providers from provider_profiles (CRUD -> config)", async () => {
     const e = env();
     const store = new ConfigStore(e.DB);
