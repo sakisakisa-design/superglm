@@ -178,3 +178,41 @@ export function injectEvidenceIntoChatPayload(
   out.messages = messages;
   return out;
 }
+
+const IMAGE_BLOCK_TYPES = new Set(["image", "image_url", "input_image"]);
+
+/**
+ * Strip image blocks from an OpenAI chat payload's messages.
+ *
+ * Used after evidence injection: once images have been converted to a textual
+ * evidence system message, the raw image blocks must be removed so a non-vision
+ * panel model doesn't reject the request (or silently drop the image). A message
+ * whose content becomes empty after stripping is replaced with a single text part
+ * so the message structure stays valid (OpenAI requires content to be non-empty
+ * when content is an array of parts for user/system messages).
+ */
+export function stripImageBlocksFromChatPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const messages = (payload.messages as Array<Record<string, unknown>>) ?? [];
+  let touched = false;
+  const cleaned = messages.map((msg) => {
+    const content = msg.content;
+    if (!Array.isArray(content)) return msg;
+    const filtered = content.filter((block) => {
+      if (block && typeof block === "object") {
+        const t = (block as Record<string, unknown>).type;
+        if (t && IMAGE_BLOCK_TYPES.has(t as string)) {
+          touched = true;
+          return false;
+        }
+      }
+      return true;
+    });
+    if (filtered.length === content.length) return msg;
+    if (filtered.length === 0) {
+      return { ...msg, content: [{ type: "text", text: "[image removed]" }] };
+    }
+    return { ...msg, content: filtered };
+  });
+  if (!touched) return payload;
+  return { ...payload, messages: cleaned };
+}

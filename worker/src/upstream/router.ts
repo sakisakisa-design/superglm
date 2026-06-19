@@ -17,6 +17,8 @@ export interface RouterOptions {
   forceRole?: string | undefined;
   /** When set, only providers speaking this protocol are eligible (e.g. Fusion is OpenAI-only). */
   requireProtocol?: "openai" | "anthropic" | undefined;
+  /** Per-call upstream timeout in ms. Falls back to the providerClient default (300000) when unset. */
+  timeoutMs?: number | undefined;
 }
 
 export interface RoutedCall {
@@ -95,7 +97,7 @@ export class ProviderRouter {
       }
       const routedPayload = { ...payload, model: targetModel };
       try {
-        const response = await callOpenAIChat(routedPayload, provider);
+        const response = await callOpenAIChat(routedPayload, provider, opts.timeoutMs);
         breaker.recordSuccess();
         attempts.push({
           providerId: provider.id,
@@ -161,7 +163,7 @@ export class ProviderRouter {
     const prepared = await this.prepareOpenAIChatStream(payload, targetModel, opts);
     const breaker = this.breaker(prepared.provider, targetModel);
     try {
-      for await (const chunk of iterOpenAIChatStream(prepared.payload, prepared.provider)) {
+      for await (const chunk of iterOpenAIChatStream(prepared.payload, prepared.provider, opts.timeoutMs)) {
         yield chunk;
       }
       breaker.recordSuccess();

@@ -35,7 +35,7 @@ import {
   type NormalizedCompletion,
 } from "../adapters/openaiOut";
 import { buildAnthropicMessagesResponse, anthropicMessagesStream } from "../adapters/anthropicOut";
-import { encodeSseEvent, encodeData, encodeDone } from "../adapters/sse";
+import { encodeSseEvent, encodeData, encodeDone, encodeComment } from "../adapters/sse";
 import { newTraceId, newMessageId, newResponseId, newShortMessageId, newChatComplId } from "../utils/ids";
 import { redact } from "../utils/redact";
 import { step, type StepLike } from "../utils/errors";
@@ -46,6 +46,7 @@ import {
   makeEvidencePackets,
   evidenceSystemMessage,
   injectEvidenceIntoChatPayload,
+  stripImageBlocksFromChatPayload,
 } from "../runtime/evidence";
 import { effectiveMode } from "./modes";
 import {
@@ -803,7 +804,17 @@ async function* streamOpenAIAsResponses(
 
 /** Whether the caller explicitly opted in to receiving panel details in the response body. */
 function wantsFusionDebug(ctx: RequestContext): boolean {
+  // Panel detail (panel_responses) is internal-ish info; only expose it when the
+  // operator has explicitly opted in via ALLOW_FUSION_DEBUG_OUTPUT AND the request
+  // carries the header. This stops a plain client key from farming panel drafts.
+  const allowed = envFlag(ctx.deps.env.ALLOW_FUSION_DEBUG_OUTPUT);
+  if (!allowed) return false;
   return ctx.request.headers.get("x-superglm-debug-fusion") === "1";
+}
+
+function envFlag(v: string | undefined): boolean {
+  if (!v) return false;
+  return v === "1" || v.toLowerCase() === "true";
 }
 
 /**
@@ -863,7 +874,10 @@ function injectVisionEvidence(
   const evidenceText = evidenceSystemMessage(packets);
   if (!evidenceText) return payload;
   steps.push(step("Vision Evidence", "worker", "success", `${packets.length} image(s) -> evidence packet`));
-  return injectEvidenceIntoChatPayload(payload, evidenceText);
+  const injected = injectEvidenceIntoChatPayload(payload, evidenceText);
+  // Remove the raw image blocks now that a textual evidence packet carries the
+  // information — otherwise a non-vision panel rejects the request on the image.
+  return stripImageBlocksFromChatPayload(injected);
 }
 
 async function handleFusionAsAnthropic(
@@ -1023,6 +1037,10 @@ async function* fusionStreamAsAnthropic(
   try {
     for await (const evt of runFusionStream(ctx.deps.router, plan, payload)) {
       if (evt.type === "panel_done") {
+        // Emit an SSE comment heartbeat so the client sees activity during the
+        // (potentially long) panel phase, instead of a silent connection that may
+        // time out or look frozen. Comments are spec-ignored as event data.
+        yield encodeComment(`panel ${evt.response.model} ${evt.response.status}`);
         steps.push(step(`Panel: ${evt.response.model}`, "fusion", evt.response.status === "success" ? "success" : "error", `${evt.response.model} ${evt.response.status} ${evt.response.latency_ms}ms`));
       } else if (evt.type === "synth_delta") {
         textParts.push(evt.text);
@@ -1092,6 +1110,10 @@ async function* fusionStreamAsOpenAI(
   try {
     for await (const evt of runFusionStream(ctx.deps.router, plan, payload)) {
       if (evt.type === "panel_done") {
+        // Emit an SSE comment heartbeat so the client sees activity during the
+        // (potentially long) panel phase, instead of a silent connection that may
+        // time out or look frozen. Comments are spec-ignored as event data.
+        yield encodeComment(`panel ${evt.response.model} ${evt.response.status}`);
         steps.push(step(`Panel: ${evt.response.model}`, "fusion", evt.response.status === "success" ? "success" : "error", `${evt.response.model} ${evt.response.status} ${evt.response.latency_ms}ms`));
       } else if (evt.type === "synth_delta") {
         textParts.push(evt.text);
@@ -1161,6 +1183,10 @@ async function* fusionStreamAsResponses(
   try {
     for await (const evt of runFusionStream(ctx.deps.router, plan, payload)) {
       if (evt.type === "panel_done") {
+        // Emit an SSE comment heartbeat so the client sees activity during the
+        // (potentially long) panel phase, instead of a silent connection that may
+        // time out or look frozen. Comments are spec-ignored as event data.
+        yield encodeComment(`panel ${evt.response.model} ${evt.response.status}`);
         steps.push(step(`Panel: ${evt.response.model}`, "fusion", evt.response.status === "success" ? "success" : "error", `${evt.response.model} ${evt.response.status} ${evt.response.latency_ms}ms`));
       } else if (evt.type === "synth_delta") {
         textParts.push(evt.text);

@@ -101,17 +101,20 @@ async function callPanel(
   model: string,
   providerId: string | undefined,
   maxTokens: number,
-  _timeoutMs: number,
+  timeoutMs: number,
 ): Promise<PanelResponse> {
   const start = Date.now();
   const panelPayload = { ...payload, max_tokens: maxTokens, stream: false };
   try {
     // Route through the failover-aware path so panels get the same circuit-breaker
     // and provider-rotation resilience as the normal single-model path. Fusion is
-    // OpenAI-only, so non-OpenAI providers are filtered out as candidates.
+    // OpenAI-only, so non-OpenAI providers are filtered out as candidates. The plan
+    // timeout is forwarded so a slow panel actually times out instead of hanging on
+    // the providerClient default (5 min).
     const routed = await router.callOpenAIChatWithFailover(panelPayload, model, {
       pinnedProviderId: providerId,
       requireProtocol: "openai",
+      timeoutMs,
     });
     const usage = extractUsage(routed.response);
     return {
@@ -302,6 +305,7 @@ export async function runFusionPipeline(
     const routed = await router.callOpenAIChatWithFailover(synthPayload, plan.synthesizer_model, {
       pinnedProviderId: plan.synthesizer_provider_id,
       requireProtocol: "openai",
+      timeoutMs: plan.timeout_ms ?? DEFAULT_TIMEOUT,
     });
     synthesizedContent = extractText(routed.response);
     const usage = extractUsage(routed.response);
@@ -382,6 +386,7 @@ export async function* runFusionStream(
     for await (const data of router.streamOpenAIChat(synthPayload, plan.synthesizer_model, {
       pinnedProviderId: plan.synthesizer_provider_id,
       requireProtocol: "openai",
+      timeoutMs: plan.timeout_ms ?? DEFAULT_TIMEOUT,
     })) {
       const { text } = openaiStreamDelta(data);
       if (text) {

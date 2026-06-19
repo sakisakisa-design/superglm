@@ -16,6 +16,18 @@ export function encodeDone(): string {
   return "data: [DONE]\n\n";
 }
 
+/**
+ * Encode an SSE comment line (starts with `: `). Per the SSE spec, comment lines
+ * are ignored by clients as event data but keep the connection alive. Used to send
+ * heartbeat/progress hints (e.g. during the Fusion panel phase) without injecting
+ * protocol-specific events that some clients might reject.
+ */
+export function encodeComment(text: string): string {
+  // Sanitize: collapse newlines so the comment stays a single SSE frame.
+  const oneLine = text.replace(/[\r\n]+/g, " ");
+  return `: ${oneLine}\n\n`;
+}
+
 /** Parse a `data:` SSE line payload into JSON, or null if not JSON / [DONE]. */
 export function parseSseData(line: string): Record<string, unknown> | null {
   if (!line || line === "[DONE]") return null;

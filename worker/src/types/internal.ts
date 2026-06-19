@@ -123,5 +123,7 @@ export interface Env {
   ENCRYPTION_KEY?: string;
   /** When "1" / "true", refuse to store provider api_keys unless ENCRYPTION_KEY is set. */
   REQUIRE_SECRET_ENCRYPTION?: string;
+  /** When "1" / "true", the x-superglm-debug-fusion header is honored to expose panel detail. Default: off. */
+  ALLOW_FUSION_DEBUG_OUTPUT?: string;
   [key: string]: unknown;
 }

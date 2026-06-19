@@ -9,6 +9,7 @@ import {
   FusionConfigError,
   FusionAllPanelsFailedError,
 } from "../src/runtime/fusion";
+import * as providerClient from "../src/upstream/providerClient";
 
 function routerWithProviders(providers: Array<Record<string, unknown>>): ProviderRouter {
   // Mark every test provider enabled so the router's enabled-filter doesn't drop them.
@@ -204,5 +205,30 @@ describe("panelResponsesForTrace", () => {
   it("leaves short panel content untouched", () => {
     const out = panelResponsesForTrace([{ provider_id: "p", model: "m", status: "success", latency_ms: 1, tokens_in: 0, tokens_out: 0, content: "short" }]);
     expect(out[0]!.content).toBe("short");
+  });
+});
+
+describe("fusion timeout pass-through", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("forwards plan.timeout_ms to callOpenAIChat so panels actually time out", async () => {
+    const router = routerWithProviders([
+      { id: "p", name: "P", protocol: "openai", base_url: "https://x/v1", api_key: "k" },
+    ]);
+    const spy = vi
+      .spyOn(providerClient, "callOpenAIChat")
+      .mockResolvedValue({ choices: [{ message: { role: "assistant", content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+    await runFusionPipeline(router, PLAN, { messages: [{ role: "user", content: "hi" }] });
+    // Every call (2 panels + synth) must carry the plan timeout, never undefined.
+    for (const call of spy.mock.calls) {
+      expect(call[2]).toBe(5000);
+    }
   });
 });

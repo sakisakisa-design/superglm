@@ -4,6 +4,7 @@ import {
   makeEvidencePackets,
   evidenceSystemMessage,
   injectEvidenceIntoChatPayload,
+  stripImageBlocksFromChatPayload,
 } from "../src/runtime/evidence";
 
 describe("detectImages", () => {
@@ -101,5 +102,50 @@ describe("evidence injection chain", () => {
   it("returns the payload unchanged when evidenceText is empty (no images)", () => {
     const payload = { messages: [{ role: "user", content: "hi" }] };
     expect(injectEvidenceIntoChatPayload(payload, "")).toBe(payload);
+  });
+});
+
+describe("stripImageBlocksFromChatPayload", () => {
+  it("removes image_url / input_image / image blocks, keeps text parts", () => {
+    const payload = {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "look at this" },
+            { type: "image_url", image_url: { url: "https://x/a.png" } },
+            { type: "input_image", image_url: "data:..." },
+          ],
+        },
+      ],
+    };
+    const out = stripImageBlocksFromChatPayload(payload);
+    const content = (out.messages as Array<Record<string, unknown>>)[0]!.content as Array<Record<string, unknown>>;
+    expect(content.length).toBe(1);
+    expect(content[0]!.type).toBe("text");
+    expect(content[0]!.text).toBe("look at this");
+  });
+
+  it("replaces a message whose content becomes empty with a text placeholder", () => {
+    const payload = {
+      messages: [
+        { role: "user", content: [{ type: "image_url", image_url: { url: "https://x" } }] },
+      ],
+    };
+    const out = stripImageBlocksFromChatPayload(payload);
+    const content = (out.messages as Array<Record<string, unknown>>)[0]!.content as Array<Record<string, unknown>>;
+    expect(content.length).toBe(1);
+    expect(content[0]!.type).toBe("text");
+    expect(String(content[0]!.text)).toMatch(/image removed/);
+  });
+
+  it("returns the payload unchanged when there are no image blocks", () => {
+    const payload = { messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }] };
+    expect(stripImageBlocksFromChatPayload(payload)).toBe(payload);
+  });
+
+  it("leaves string-content messages untouched (no array to filter)", () => {
+    const payload = { messages: [{ role: "user", content: "just text" }] };
+    expect(stripImageBlocksFromChatPayload(payload)).toBe(payload);
   });
 });
