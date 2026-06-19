@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const dbName = process.argv[2] || process.env.SUPERDS_D1_NAME || "superdeepseek";
+const dbName = process.argv[2] || process.env.SUPERDS_D1_NAME || "superglm";
 const configPath = resolve("wrangler.jsonc");
 
 function runWrangler(args) {
@@ -46,7 +46,6 @@ try {
   patchWrangler(databaseId);
   console.log(`Updated wrangler.jsonc with D1 database_id ${databaseId}`);
   console.log("Next steps:");
-  console.log(`  npx wrangler d1 migrations apply ${dbName} --remote`);
   console.log("  npx wrangler secret put SUPERDS_LOCAL_API_KEY");
   console.log("  npm run deploy");
 } catch (error) {

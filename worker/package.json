@@ -1,11 +1,12 @@
 {
-  "name": "superdeepseek-worker",
+  "name": "superglm-worker",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "npm run build && npm run db:migrations:apply && wrangler deploy",
+    "db:migrations:apply": "wrangler d1 migrations apply DB --remote",
     "cf:bootstrap": "node scripts/bootstrap-cloudflare.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -24,5 +25,15 @@
     "vite": "^5.3.5",
     "vitest": "^1.6.0",
     "wrangler": "^4.102.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "D1 database used for providers, aliases, dashboard config, trace logs, and gateway keys."
+      },
+      "SUPERDS_LOCAL_API_KEY": {
+        "description": "Gateway admin key used by the hosted dashboard and client requests. Generate a strong random value and keep it secret."
+      }
+    }
   }
 }

@@ -1,7 +1,7 @@
 {
   // SuperDeepSeek Worker — Cloudflare Worker + Static Assets
   // Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
-  "name": "superdeepseek-worker",
+  "name": "superglm",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-01",
   "assets": {
@@ -12,8 +12,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "superdeepseek",
-      // Replace with the real D1 database id from `wrangler d1 create superdeepseek`
+      "database_name": "superglm",
+      // Replace with the real D1 database id from `wrangler d1 create superglm`
       "database_id": "PLACEHOLDER_DATABASE_ID",
       "migrations_dir": "migrations"
     }

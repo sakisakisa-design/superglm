@@ -26,6 +26,46 @@ dashboard, and configure providers from the browser.
 
 ## Deploy To Cloudflare
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sakisakisa-design/superglm/tree/main/worker)
+
+### One-click deploy
+
+Use the button above to deploy `worker/` directly from GitHub. Cloudflare will
+clone the Worker app into your GitHub account, provision the required D1 database,
+run the build/deploy command, and bind the resources to the Worker.
+
+During setup, provide a strong `SUPERDS_LOCAL_API_KEY`. This is the gateway admin
+key used by the hosted dashboard and by Claude/OpenAI-compatible clients.
+
+After deploy, open the Worker URL in your browser. The dashboard asks for that
+gateway key.
+
+### Cloudflare Dashboard GitHub deploy
+
+You can also deploy from the Cloudflare dashboard without using local Wrangler:
+
+1. Open Cloudflare Dashboard -> Workers & Pages.
+2. Select Create application.
+3. Select Import a repository.
+4. Connect GitHub and choose `sakisakisa-design/superglm` or your fork.
+5. Set the root directory to `worker`.
+6. Use production branch `main`.
+7. If Cloudflare shows resource setup, keep/create the D1 binding named `DB`.
+8. Leave Build command empty.
+9. Set Deploy command to `npm run deploy`.
+10. Add the runtime secret `SUPERDS_LOCAL_API_KEY`.
+11. Save and deploy.
+
+`npm run deploy` builds the dashboard, applies the D1 migration through the `DB`
+binding, and deploys the Worker.
+
+If the first build says the `DB` binding is missing, create a D1 database in the
+Cloudflare dashboard, bind it to the Worker as `DB`, then retry the deployment.
+
+### Local Wrangler deploy
+
+Wrangler is still useful for local development or manual deployment.
+
 Prerequisites:
 
 - Node.js 20+
@@ -38,17 +78,14 @@ From a fresh fork:
 cd worker
 npm install
 npm run cf:bootstrap
-npx wrangler d1 migrations apply superdeepseek --remote
 npx wrangler secret put SUPERDS_LOCAL_API_KEY
 npm run deploy
 ```
 
 `npm run cf:bootstrap` creates the D1 database and writes its `database_id` into
-`worker/wrangler.jsonc`. If you already created the D1 database manually, copy
-the `database_id` into `worker/wrangler.jsonc` instead.
-
-After deploy, open the Worker URL in your browser. The dashboard asks for the
-gateway key you stored in `SUPERDS_LOCAL_API_KEY`.
+`worker/wrangler.jsonc`. The deploy script applies D1 migrations automatically.
+If you already created the D1 database manually, copy the `database_id` into
+`worker/wrangler.jsonc` instead.
 
 ## Configure Providers
 

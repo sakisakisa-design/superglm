@@ -17,7 +17,7 @@ local filesystem, no SQLite files — just a Worker, D1, and Workers Static Asse
 | Persistence | `config/superds.json` + `data/traces.sqlite3` | D1 (`config`, `provider_profiles`, `aliases`, `traces`, `api_keys`) |
 | Dashboard | served by FastAPI | built by Vite, served by Workers Static Assets |
 | Upstream HTTP | `httpx` | Workers `fetch` |
-| Deploy | `docker compose up` | `wrangler deploy` |
+| Deploy | `docker compose up` | Deploy to Cloudflare button, Workers Builds, or `wrangler deploy` |
 
 The two editions do not share process state. The Worker edition is not "Python moved
 to the edge" — it is a Cloudflare-native gateway runtime that preserves SuperDeepSeek's
@@ -140,7 +140,7 @@ computation and before upstream forwarding, and recorded in the trace.
 cd worker
 npm install
 npm run cf:bootstrap                       # create D1 and write database_id into wrangler.jsonc
-npx wrangler d1 migrations apply superdeepseek --remote   # or --local
+npx wrangler d1 migrations apply DB --remote              # or --local
 npm run dev                                 # wrangler dev (API + proxy)
 npm run build                               # vite build (dashboard -> dist/client)
 npm run typecheck
@@ -149,11 +149,48 @@ npm test
 
 For local dev with D1:
 ```bash
-npx wrangler d1 migrations apply superdeepseek --local
+npx wrangler d1 migrations apply DB --local
 npx wrangler dev --local
 ```
 
 ## 7. Deploy
+
+### Deploy to Cloudflare button
+
+Use the README button, or open this URL directly:
+
+```text
+https://deploy.workers.cloudflare.com/?url=https://github.com/sakisakisa-design/superglm/tree/main/worker
+```
+
+Cloudflare will clone the Worker app, provision supported resources such as D1,
+run the deploy command, and bind the resources to the Worker. During setup,
+provide `SUPERDS_LOCAL_API_KEY` as a secret; this is the gateway key for the
+dashboard and client requests.
+
+### Cloudflare Dashboard + GitHub
+
+To deploy without local Wrangler:
+
+1. Open Cloudflare Dashboard -> Workers & Pages.
+2. Select Create application.
+3. Select Import a repository.
+4. Connect GitHub and choose `sakisakisa-design/superglm` or your fork.
+5. Set root directory to `worker`.
+6. Set production branch to `main`.
+7. If Cloudflare shows resource setup, keep/create the D1 binding named `DB`.
+8. Leave Build command empty.
+9. Set Deploy command to `npm run deploy`.
+10. Add runtime secret `SUPERDS_LOCAL_API_KEY`.
+11. Save and deploy.
+
+`npm run deploy` builds the dashboard, applies D1 migrations through the `DB`
+binding, and deploys the Worker.
+
+If the first build says the `DB` binding is missing, create a D1 database in the
+Cloudflare dashboard, bind it to the Worker as `DB`, then retry the deployment.
+
+### Local Wrangler
 
 From a fresh fork:
 
@@ -161,7 +198,6 @@ From a fresh fork:
 cd worker
 npm install
 npm run cf:bootstrap
-npx wrangler d1 migrations apply superdeepseek --remote
 npx wrangler secret put SUPERDS_LOCAL_API_KEY
 npm run deploy
 ```
