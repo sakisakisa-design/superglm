@@ -18,6 +18,7 @@ const INIT_STATEMENTS = [
     base_url TEXT NOT NULL,
     api_key TEXT,
     protocol TEXT NOT NULL DEFAULT 'openai',
+    default_model TEXT,
     models TEXT NOT NULL DEFAULT '[]',
     enabled INTEGER NOT NULL DEFAULT 1,
     timeout_ms INTEGER NOT NULL DEFAULT 60000,
@@ -25,6 +26,7 @@ const INIT_STATEMENTS = [
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
   "CREATE INDEX IF NOT EXISTS idx_provider_profiles_enabled ON provider_profiles(enabled)",
+  "ALTER TABLE provider_profiles ADD COLUMN default_model TEXT",
   `CREATE TABLE IF NOT EXISTS aliases (
     id TEXT PRIMARY KEY,
     alias TEXT NOT NULL UNIQUE,
@@ -81,7 +83,11 @@ export async function ensureD1Schema(db: D1Database): Promise<void> {
   if (!schemaReady) {
     schemaReady = (async () => {
       for (const sql of INIT_STATEMENTS) {
-        await db.prepare(sql).run();
+        try {
+          await db.prepare(sql).run();
+        } catch (err) {
+          if (!isIgnorableSchemaError(err)) throw err;
+        }
       }
     })();
   }
@@ -90,6 +96,11 @@ export async function ensureD1Schema(db: D1Database): Promise<void> {
 
 export function __resetD1SchemaForTest(): void {
   schemaReady = null;
+}
+
+function isIgnorableSchemaError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /duplicate column name|already exists/i.test(message);
 }
 
 export function nowIso(): string {

@@ -31,7 +31,18 @@ export async function testConnection(ctx: RouteCtx): Promise<Response> {
   if (body["api_key"]) provider = { ...provider, api_key: body["api_key"] as string };
   if (body["model"]) provider = { ...provider, test_model: body["model"] as string };
 
-  const model = provider.test_model ?? provider.default_model ?? "gpt-4o-mini";
+  const model = provider.test_model ?? provider.default_model ?? "";
+  if (!model) {
+    return jsonResponse(200, {
+      ok: false,
+      status: "missing_model",
+      latency_ms: null,
+      ttfb_ms: null,
+      mode: "stream_check",
+      model: "",
+      error: "Set a test model or provider default_model before testing the connection.",
+    });
+  }
   if (!provider.api_key || !provider.base_url) {
     return jsonResponse(200, {
       ok: false,

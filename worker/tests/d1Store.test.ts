@@ -39,8 +39,8 @@ class FakeD1 {
 
   run(query: string, values: unknown[]): void {
     if (query.includes("provider_profiles")) {
-      const [id, name, base_url, api_key, protocol, models, _enabled, timeout_ms] = values;
-      this.providers[String(id)] = { id, name, base_url, api_key, protocol, models, enabled: 1, timeout_ms };
+      const [id, name, base_url, api_key, protocol, default_model, models, timeout_ms] = values;
+      this.providers[String(id)] = { id, name, base_url, api_key, protocol, default_model, models, enabled: 1, timeout_ms };
     } else if (query.includes("aliases")) {
       const [id, alias, target_model, provider_id, strategy, enabled] = values;
       this.aliases[String(alias)] = { id, alias, target_model, provider_id, strategy, enabled };
@@ -107,6 +107,7 @@ describe("D1 stores", () => {
       name: "SiliconFlow",
       protocol: "openai",
       base_url: "https://api.siliconflow.cn/v1",
+      default_model: "zai-org/GLM-5.2",
     });
     await store.upsertAlias({
       id: "a1",
@@ -118,7 +119,11 @@ describe("D1 stores", () => {
       strategy: "failover",
     });
 
-    expect(await store.getProviderProfile("sf")).toMatchObject({ id: "sf", name: "SiliconFlow" });
+    expect(await store.getProviderProfile("sf")).toMatchObject({
+      id: "sf",
+      name: "SiliconFlow",
+      default_model: "zai-org/GLM-5.2",
+    });
     expect(await store.listAliases()).toHaveLength(1);
   });
 

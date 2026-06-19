@@ -7,6 +7,7 @@ interface ProviderProfileRow {
   base_url: string;
   api_key?: string | null;
   protocol?: string | null;
+  default_model?: string | null;
   models?: string | null;
   enabled: number;
   timeout_ms?: number | null;
@@ -54,13 +55,14 @@ export class ConfigStore {
     await this.db
       .prepare(
         `INSERT INTO provider_profiles
-          (id, name, base_url, api_key, protocol, models, enabled, timeout_ms, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 1, ?, datetime('now'))
+          (id, name, base_url, api_key, protocol, default_model, models, enabled, timeout_ms, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'))
          ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
           base_url = excluded.base_url,
           api_key = excluded.api_key,
           protocol = excluded.protocol,
+          default_model = excluded.default_model,
           models = excluded.models,
           timeout_ms = excluded.timeout_ms,
           updated_at = datetime('now')`,
@@ -71,6 +73,7 @@ export class ConfigStore {
         profile.base_url,
         profile.api_key ?? null,
         profile.protocol,
+        profile.default_model ?? null,
         JSON.stringify(profile.capabilities?.models ?? []),
         profile.degraded_threshold_ms ?? 60000,
       )
@@ -129,6 +132,7 @@ function providerFromRow(row: ProviderProfileRow): ProviderConfig {
     enabled: Boolean(row.enabled),
   };
   if (row.api_key) provider.api_key = row.api_key;
+  if (row.default_model) provider.default_model = row.default_model;
   if (row.timeout_ms != null) provider.degraded_threshold_ms = row.timeout_ms;
   return provider;
 }

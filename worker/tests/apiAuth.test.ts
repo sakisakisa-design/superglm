@@ -148,4 +148,24 @@ describe("admin auth gate on /api/*", () => {
     expect(res.status).toBe(200);
     expect(env.db.providers.get("deepseek")?.api_key).toBe("test-provider-new-12345678");
   });
+
+  it("does not fall back to gpt-4o-mini when testing a provider without a default model", async () => {
+    const env = envWithProvider();
+    const res = await worker.fetch(
+      new Request("https://gw.test/api/test-connection", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${GATEWAY_KEY}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider_id: "deepseek" }),
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; status: string; model: string };
+    expect(body.ok).toBe(false);
+    expect(body.status).toBe("missing_model");
+    expect(body.model).toBe("");
+  });
 });
