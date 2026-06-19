@@ -13,8 +13,6 @@
     {
       "binding": "DB",
       "database_name": "superglm",
-      // Replace with the real D1 database id from `wrangler d1 create superglm`
-      "database_id": "PLACEHOLDER_DATABASE_ID",
       "migrations_dir": "migrations"
     }
   ],

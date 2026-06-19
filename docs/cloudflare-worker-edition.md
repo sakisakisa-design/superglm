@@ -184,11 +184,18 @@ To deploy without local Wrangler:
 10. Add runtime secret `SUPERDS_LOCAL_API_KEY`.
 11. Save and deploy.
 
-`npm run deploy` builds the dashboard, applies D1 migrations through the `DB`
-binding, and deploys the Worker.
+`npm run deploy` builds the dashboard and deploys the Worker. The Worker creates
+the D1 tables it needs on first request, so first-time dashboard deploys do not
+need a local migration step.
 
 If the first build says the `DB` binding is missing, create a D1 database in the
 Cloudflare dashboard, bind it to the Worker as `DB`, then retry the deployment.
+
+If a live Worker does not redeploy after a GitHub push, check that Cloudflare is
+connected to the same repo/branch you are pushing, root directory is `worker`,
+and the Worker name matches `worker/wrangler.jsonc` (`superglm` by default).
+Deploy Button flows may create a separate GitHub copy; pushes to the upstream
+repo will not automatically redeploy that copy.
 
 ### Local Wrangler
 

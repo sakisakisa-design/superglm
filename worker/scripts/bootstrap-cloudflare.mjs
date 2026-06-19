@@ -25,12 +25,11 @@ function extractDatabaseId(output) {
 
 function patchWrangler(databaseId) {
   const current = readFileSync(configPath, "utf8");
-  const next = current.replace(
-    /"database_id"\s*:\s*"[^"]*"/,
-    `"database_id": "${databaseId}"`,
-  );
+  const next = /"database_id"\s*:/.test(current)
+    ? current.replace(/"database_id"\s*:\s*"[^"]*"/, `"database_id": "${databaseId}"`)
+    : current.replace(/("database_name"\s*:\s*"[^"]+",)/, `$1\n      "database_id": "${databaseId}",`);
   if (next === current) {
-    throw new Error(`Could not find database_id in ${configPath}`);
+    throw new Error(`Could not add database_id in ${configPath}`);
   }
   writeFileSync(configPath, next);
 }

@@ -53,11 +53,19 @@ Claude/OpenAI-compatible 客户端共用的 gateway admin key。
 10. 添加 runtime secret：`SUPERDS_LOCAL_API_KEY`。
 11. Save and deploy。
 
-`npm run deploy` 会构建控制面板，通过 `DB` binding 执行 D1 migration，然后部署
-Worker。
+`npm run deploy` 会构建控制面板并部署 Worker。Worker 第一次收到请求时会自动创建
+需要的 D1 表，所以首次通过 Dashboard 部署不需要本地 migration 步骤。
 
 如果第一次构建提示缺少 `DB` binding，就在 Cloudflare Dashboard 里创建一个 D1
 database，并把它以 `DB` 这个 binding 名绑定到 Worker，然后重试部署。
+
+如果线上 Worker 没有因为 GitHub 新提交自动重新部署，检查这几项：
+
+- Cloudflare 连接的是你正在推送的 repo 和 branch，而不是 Deploy Button 创建出来的另一个拷贝。
+- Workers & Pages -> 你的 Worker -> Settings -> Builds 里已经连接 GitHub。
+- Root directory 是 `worker`。
+- Worker 名称和 `worker/wrangler.jsonc` 里的 `name` 一致，默认是 `superglm`。
+- 在 Builds 页面手动点一次 Retry deployment / Deploy latest commit，确认构建日志没有报错。
 
 ### 本地 Wrangler 部署
 
@@ -80,8 +88,8 @@ npm run deploy
 ```
 
 `npm run cf:bootstrap` 会创建 D1 database，并把 `database_id` 写进
-`worker/wrangler.jsonc`。deploy script 会自动执行 D1 migrations。如果你已经手动
-创建了 D1，也可以直接把 `database_id` 填进 `worker/wrangler.jsonc`。
+`worker/wrangler.jsonc`。如果你已经手动创建了 D1，也可以直接把 `database_id`
+填进 `worker/wrangler.jsonc`。
 
 ## 配置 Provider
 

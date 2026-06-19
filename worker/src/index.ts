@@ -21,6 +21,7 @@ import { claudeSmoke } from "./api/claudeSmoke";
 import { healthHandler } from "./api/health";
 import { authenticate, authDenied } from "./auth/auth";
 import { ConfigStore } from "./storage/configStore";
+import { ensureD1Schema, __resetD1SchemaForTest } from "./storage/d1";
 import { TraceStore } from "./storage/traceStore";
 import { ProviderRouter } from "./upstream/router";
 import {
@@ -61,6 +62,7 @@ function getSingletons(env: Env): Singletons {
 /** Test hook: reset the module-level singleton cache (so tests get isolated state). */
 export function __resetSingletonsForTest(): void {
   cachedSingletons = null;
+  __resetD1SchemaForTest();
 }
 
 async function serveApi(
@@ -214,6 +216,7 @@ async function parseBody(request: Request): Promise<Record<string, unknown> | Re
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    await ensureD1Schema(env.DB);
     const singletons = getSingletons(env);
 
     const api = await serveApi(request, env, singletons);
