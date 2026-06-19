@@ -48,7 +48,7 @@ import {
   injectEvidenceIntoChatPayload,
 } from "../runtime/evidence";
 import { effectiveMode } from "./modes";
-import { runFusionPipeline } from "./fusion";
+import { runFusionPipeline, runFusionStream } from "./fusion";
 
 export interface PipelineDeps {
   env: Env;
@@ -224,8 +224,8 @@ export async function handleAnthropicMessages(ctx: RequestContext, body: Record<
   ];
 
   const fusionPlan = getFusionPlan(ctx, alias);
-  if (fusionPlan && !wantStream) {
-    return handleFusionAsAnthropic(ctx, body, fusionPlan, incomingModel, targetModel, traceId, steps);
+  if (fusionPlan) {
+    return handleFusionAsAnthropic(ctx, body, fusionPlan, incomingModel, targetModel, traceId, wantStream, steps);
   }
 
   // Resolve provider to decide upstream protocol (anthropic passthrough vs openai conversion).
@@ -364,8 +364,8 @@ export async function handleOpenAIChat(ctx: RequestContext, body: Record<string,
   ];
 
   const fusionPlan = getFusionPlan(ctx, alias);
-  if (fusionPlan && !wantStream) {
-    return handleFusionAsOpenAI(ctx, body, payload, fusionPlan, incomingModel, targetModel, traceId, steps);
+  if (fusionPlan) {
+    return handleFusionAsOpenAI(ctx, body, payload, fusionPlan, incomingModel, targetModel, traceId, wantStream, steps);
   }
   const baseRequest = {
     headers: redact(Object.fromEntries(request.headers.entries())),
@@ -439,8 +439,8 @@ export async function handleOpenAIResponses(ctx: RequestContext, body: Record<st
   ];
 
   const fusionPlan = getFusionPlan(ctx, alias);
-  if (fusionPlan && !wantStream) {
-    return handleFusionAsResponses(ctx, body, payload, fusionPlan, incomingModel, targetModel, traceId, steps);
+  if (fusionPlan) {
+    return handleFusionAsResponses(ctx, body, payload, fusionPlan, incomingModel, targetModel, traceId, wantStream, steps);
   }
   const baseRequest = {
     headers: redact(Object.fromEntries(request.headers.entries())),
@@ -802,22 +802,31 @@ async function handleFusionAsAnthropic(
   incomingModel: string,
   targetModel: string,
   traceId: string,
+  wantStream: boolean,
   steps: StepLike[],
 ): Promise<Response> {
   const fusionPayload = anthropicToOpenaiPayload(body, targetModel, "strip_for_non_anthropic_upstream", "openai").payload;
-  const result = await runFusionPipeline(ctx.deps.router, plan, fusionPayload);
-  steps.push(step("Fusion Pipeline", "fusion", "success", `${result.strategy}: ${result.panel_responses.length} panel calls, judge=${result.judge_report ? "ok" : "skipped"}`));
-  const completion = { id: newMessageId(), model: incomingModel, content: result.synthesized_content, stopReason: "end_turn", usage: { inputTokens: result.total_tokens_in, outputTokens: result.total_tokens_out, totalTokens: result.total_tokens_in + result.total_tokens_out }, raw: {} };
-  const response = buildAnthropicMessagesResponse(completion);
-  await writeTrace(ctx, traceRecord({
-    trace_id: traceId, status: "success", latency_ms: result.total_latency_ms,
-    client_protocol: "anthropic", client_name: "claude-code",
-    incoming_model: incomingModel, upstream_model: targetModel,
-    usage: { inputTokens: result.total_tokens_in, outputTokens: result.total_tokens_out, totalTokens: result.total_tokens_in + result.total_tokens_out },
-    steps, request: { body: redact(body) },
-    response: redact({ ...response, _fusion: { panel_responses: result.panel_responses, judge_report: result.judge_report } }),
-  }));
-  return new Response(JSON.stringify(response), { headers: { "content-type": "application/json", "x-superds-trace-id": traceId } });
+
+  if (!wantStream) {
+    const result = await runFusionPipeline(ctx.deps.router, plan, fusionPayload);
+    steps.push(step("Fusion Pipeline", "fusion", "success", `${result.strategy}: ${result.panel_responses.length} panel calls`));
+    const completion = { id: newMessageId(), model: incomingModel, content: result.synthesized_content, stopReason: "end_turn", usage: { inputTokens: result.total_tokens_in, outputTokens: result.total_tokens_out, totalTokens: result.total_tokens_in + result.total_tokens_out }, raw: {} };
+    const response = buildAnthropicMessagesResponse(completion);
+    await writeTrace(ctx, traceRecord({
+      trace_id: traceId, status: "success", latency_ms: result.total_latency_ms,
+      client_protocol: "anthropic", client_name: "claude-code",
+      incoming_model: incomingModel, upstream_model: targetModel,
+      usage: { inputTokens: result.total_tokens_in, outputTokens: result.total_tokens_out, totalTokens: result.total_tokens_in + result.total_tokens_out },
+      steps, request: { body: redact(body) },
+      response: redact({ ...response, _fusion: { panel_responses: result.panel_responses } }),
+    }));
+    return new Response(JSON.stringify(response), { headers: { "content-type": "application/json", "x-superds-trace-id": traceId } });
+  }
+
+  return streamToResponse(
+    fusionStreamAsAnthropic(ctx, plan, fusionPayload, incomingModel, targetModel, traceId, steps),
+    { "x-superds-trace-id": traceId },
+  );
 }
 
 async function handleFusionAsOpenAI(
@@ -828,25 +837,33 @@ async function handleFusionAsOpenAI(
   incomingModel: string,
   targetModel: string,
   traceId: string,
+  wantStream: boolean,
   steps: StepLike[],
 ): Promise<Response> {
-  const result = await runFusionPipeline(ctx.deps.router, plan, payload);
-  steps.push(step("Fusion Pipeline", "fusion", "success", `${result.strategy}: ${result.panel_responses.length} panel calls, judge=${result.judge_report ? "ok" : "skipped"}`));
-  const now = Math.floor(Date.now() / 1000);
-  const response = {
-    id: newChatComplId(), object: "chat.completion", created: now, model: incomingModel,
-    choices: [{ index: 0, message: { role: "assistant", content: result.synthesized_content }, finish_reason: "stop" }],
-    usage: { prompt_tokens: result.total_tokens_in, completion_tokens: result.total_tokens_out, total_tokens: result.total_tokens_in + result.total_tokens_out },
-    _fusion: { panel_responses: result.panel_responses, judge_report: result.judge_report },
-  };
-  await writeTrace(ctx, traceRecord({
-    trace_id: traceId, status: "success", latency_ms: result.total_latency_ms,
-    client_protocol: "openai", client_name: "unknown",
-    incoming_model: incomingModel, upstream_model: targetModel,
-    usage: { inputTokens: result.total_tokens_in, outputTokens: result.total_tokens_out, totalTokens: result.total_tokens_in + result.total_tokens_out },
-    steps, request: { body: redact(body) }, response: redact(response),
-  }));
-  return new Response(JSON.stringify(response), { headers: { "content-type": "application/json", "x-superds-trace-id": traceId } });
+  if (!wantStream) {
+    const result = await runFusionPipeline(ctx.deps.router, plan, payload);
+    steps.push(step("Fusion Pipeline", "fusion", "success", `${result.strategy}: ${result.panel_responses.length} panel calls`));
+    const now = Math.floor(Date.now() / 1000);
+    const response = {
+      id: newChatComplId(), object: "chat.completion", created: now, model: incomingModel,
+      choices: [{ index: 0, message: { role: "assistant", content: result.synthesized_content }, finish_reason: "stop" }],
+      usage: { prompt_tokens: result.total_tokens_in, completion_tokens: result.total_tokens_out, total_tokens: result.total_tokens_in + result.total_tokens_out },
+      _fusion: { panel_responses: result.panel_responses },
+    };
+    await writeTrace(ctx, traceRecord({
+      trace_id: traceId, status: "success", latency_ms: result.total_latency_ms,
+      client_protocol: "openai", client_name: "unknown",
+      incoming_model: incomingModel, upstream_model: targetModel,
+      usage: { inputTokens: result.total_tokens_in, outputTokens: result.total_tokens_out, totalTokens: result.total_tokens_in + result.total_tokens_out },
+      steps, request: { body: redact(body) }, response: redact(response),
+    }));
+    return new Response(JSON.stringify(response), { headers: { "content-type": "application/json", "x-superds-trace-id": traceId } });
+  }
+
+  return streamToResponse(
+    fusionStreamAsOpenAI(ctx, plan, payload, incomingModel, targetModel, traceId, steps),
+    { "x-superds-trace-id": traceId },
+  );
 }
 
 async function handleFusionAsResponses(
@@ -857,21 +874,187 @@ async function handleFusionAsResponses(
   incomingModel: string,
   targetModel: string,
   traceId: string,
+  wantStream: boolean,
   steps: StepLike[],
 ): Promise<Response> {
-  const result = await runFusionPipeline(ctx.deps.router, plan, payload);
-  steps.push(step("Fusion Pipeline", "fusion", "success", `${result.strategy}: ${result.panel_responses.length} panel calls, judge=${result.judge_report ? "ok" : "skipped"}`));
-  const completion = { id: newResponseId(), model: incomingModel, content: result.synthesized_content, stopReason: "stop", usage: { inputTokens: result.total_tokens_in, outputTokens: result.total_tokens_out, totalTokens: result.total_tokens_in + result.total_tokens_out }, raw: {} };
-  const response = buildResponsesResponse(completion, incomingModel);
-  await writeTrace(ctx, traceRecord({
-    trace_id: traceId, status: "success", latency_ms: result.total_latency_ms,
-    client_protocol: "openai_responses", client_name: "unknown",
-    incoming_model: incomingModel, upstream_model: targetModel,
-    usage: { inputTokens: result.total_tokens_in, outputTokens: result.total_tokens_out, totalTokens: result.total_tokens_in + result.total_tokens_out },
-    steps, request: { body: redact(body) },
-    response: redact({ ...response, _fusion: { panel_responses: result.panel_responses, judge_report: result.judge_report } }),
-  }));
-  return new Response(JSON.stringify(response), { headers: { "content-type": "application/json", "x-superds-trace-id": traceId } });
+  if (!wantStream) {
+    const result = await runFusionPipeline(ctx.deps.router, plan, payload);
+    steps.push(step("Fusion Pipeline", "fusion", "success", `${result.strategy}: ${result.panel_responses.length} panel calls`));
+    const completion = { id: newResponseId(), model: incomingModel, content: result.synthesized_content, stopReason: "stop", usage: { inputTokens: result.total_tokens_in, outputTokens: result.total_tokens_out, totalTokens: result.total_tokens_in + result.total_tokens_out }, raw: {} };
+    const response = buildResponsesResponse(completion, incomingModel);
+    await writeTrace(ctx, traceRecord({
+      trace_id: traceId, status: "success", latency_ms: result.total_latency_ms,
+      client_protocol: "openai_responses", client_name: "unknown",
+      incoming_model: incomingModel, upstream_model: targetModel,
+      usage: { inputTokens: result.total_tokens_in, outputTokens: result.total_tokens_out, totalTokens: result.total_tokens_in + result.total_tokens_out },
+      steps, request: { body: redact(body) },
+      response: redact({ ...response, _fusion: { panel_responses: result.panel_responses } }),
+    }));
+    return new Response(JSON.stringify(response), { headers: { "content-type": "application/json", "x-superds-trace-id": traceId } });
+  }
+
+  return streamToResponse(
+    fusionStreamAsResponses(ctx, plan, payload, incomingModel, targetModel, traceId, steps),
+    { "x-superds-trace-id": traceId },
+  );
+}
+
+/** Fusion stream formatted as Anthropic SSE (message_start → deltas → message_stop). */
+async function* fusionStreamAsAnthropic(
+  ctx: RequestContext,
+  plan: FusionPlanConfig,
+  payload: Record<string, unknown>,
+  incomingModel: string,
+  targetModel: string,
+  traceId: string,
+  steps: StepLike[],
+): AsyncGenerator<string, void, unknown> {
+  const messageId = newMessageId();
+  const textParts: string[] = [];
+  let fusionResult: { panel_responses: unknown[]; tokens_in: number; tokens_out: number; latency: number } | null = null;
+
+  yield encodeSseEvent("message_start", {
+    message: { id: messageId, type: "message", role: "assistant", model: incomingModel, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } },
+  });
+  yield encodeSseEvent("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+
+  try {
+    for await (const evt of runFusionStream(ctx.deps.router, plan, payload)) {
+      if (evt.type === "panel_done") {
+        steps.push(step(`Panel: ${evt.response.model}`, "fusion", evt.response.status === "success" ? "success" : "error", `${evt.response.model} ${evt.response.status} ${evt.response.latency_ms}ms`));
+      } else if (evt.type === "synth_delta") {
+        textParts.push(evt.text);
+        yield encodeSseEvent("content_block_delta", { index: 0, delta: { type: "text_delta", text: evt.text } });
+      } else if (evt.type === "done") {
+        fusionResult = { panel_responses: evt.panel_responses, tokens_in: evt.total_tokens_in, tokens_out: evt.total_tokens_out, latency: evt.total_latency_ms };
+      } else if (evt.type === "error") {
+        yield encodeSseEvent("error", { type: "error", error: { type: "fusion_error", message: evt.message } });
+      }
+    }
+  } catch (err) {
+    yield encodeSseEvent("error", { type: "error", error: { type: "fusion_error", message: err instanceof Error ? err.message : String(err) } });
+  }
+
+  yield encodeSseEvent("content_block_stop", { index: 0 });
+  yield encodeSseEvent("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: fusionResult?.tokens_out ?? 0 } });
+  yield encodeSseEvent("message_stop", {});
+
+  if (fusionResult) {
+    steps.push(step("Fusion Pipeline", "fusion", "success", `${plan.strategy}: ${fusionResult.panel_responses.length} calls, synth streamed`));
+    await writeTrace(ctx, traceRecord({
+      trace_id: traceId, status: "success", latency_ms: fusionResult.latency,
+      client_protocol: "anthropic", client_name: "claude-code",
+      incoming_model: incomingModel, upstream_model: targetModel,
+      usage: { inputTokens: fusionResult.tokens_in, outputTokens: fusionResult.tokens_out, totalTokens: fusionResult.tokens_in + fusionResult.tokens_out },
+      steps, request: {}, response: { id: messageId, type: "message", role: "assistant", model: incomingModel, content: [{ type: "text", text: textParts.join("") }] },
+    }));
+  }
+}
+
+/** Fusion stream formatted as OpenAI chat.completion.chunk SSE. */
+async function* fusionStreamAsOpenAI(
+  ctx: RequestContext,
+  plan: FusionPlanConfig,
+  payload: Record<string, unknown>,
+  incomingModel: string,
+  targetModel: string,
+  traceId: string,
+  steps: StepLike[],
+): AsyncGenerator<string, void, unknown> {
+  const chatId = newChatComplId();
+  const created = Math.floor(Date.now() / 1000);
+  const textParts: string[] = [];
+  let fusionResult: { panel_responses: unknown[]; tokens_in: number; tokens_out: number; latency: number } | null = null;
+
+  yield encodeData({ id: chatId, object: "chat.completion.chunk", created, model: incomingModel, choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] });
+
+  try {
+    for await (const evt of runFusionStream(ctx.deps.router, plan, payload)) {
+      if (evt.type === "panel_done") {
+        steps.push(step(`Panel: ${evt.response.model}`, "fusion", evt.response.status === "success" ? "success" : "error", `${evt.response.model} ${evt.response.status} ${evt.response.latency_ms}ms`));
+      } else if (evt.type === "synth_delta") {
+        textParts.push(evt.text);
+        yield encodeData({ id: chatId, object: "chat.completion.chunk", created, model: incomingModel, choices: [{ index: 0, delta: { content: evt.text }, finish_reason: null }] });
+      } else if (evt.type === "done") {
+        fusionResult = { panel_responses: evt.panel_responses, tokens_in: evt.total_tokens_in, tokens_out: evt.total_tokens_out, latency: evt.total_latency_ms };
+      } else if (evt.type === "error") {
+        yield encodeData({ error: { message: evt.message } });
+      }
+    }
+  } catch (err) {
+    yield encodeData({ error: { message: err instanceof Error ? err.message : String(err) } });
+  }
+
+  yield encodeData({ id: chatId, object: "chat.completion.chunk", created, model: incomingModel, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
+  yield encodeDone();
+
+  if (fusionResult) {
+    steps.push(step("Fusion Pipeline", "fusion", "success", `${plan.strategy}: ${fusionResult.panel_responses.length} calls, synth streamed`));
+    await writeTrace(ctx, traceRecord({
+      trace_id: traceId, status: "success", latency_ms: fusionResult.latency,
+      client_protocol: "openai", client_name: "unknown",
+      incoming_model: incomingModel, upstream_model: targetModel,
+      usage: { inputTokens: fusionResult.tokens_in, outputTokens: fusionResult.tokens_out, totalTokens: fusionResult.tokens_in + fusionResult.tokens_out },
+      steps, request: {}, response: { id: chatId, model: incomingModel, content: textParts.join("") },
+    }));
+  }
+}
+
+/** Fusion stream formatted as OpenAI Responses SSE. */
+async function* fusionStreamAsResponses(
+  ctx: RequestContext,
+  plan: FusionPlanConfig,
+  payload: Record<string, unknown>,
+  incomingModel: string,
+  targetModel: string,
+  traceId: string,
+  steps: StepLike[],
+): AsyncGenerator<string, void, unknown> {
+  const responseId = newResponseId();
+  const itemId = newShortMessageId();
+  const textParts: string[] = [];
+  let fusionResult: { panel_responses: unknown[]; tokens_in: number; tokens_out: number; latency: number } | null = null;
+  let seq = 0;
+
+  const nextSeq = () => ++seq;
+  yield encodeSseEvent("response.created", { type: "response.created", sequence_number: nextSeq(), response: { id: responseId, object: "response", created_at: Math.floor(Date.now() / 1000), status: "in_progress", model: incomingModel, output: [] } });
+  yield encodeSseEvent("response.output_item.added", { type: "response.output_item.added", sequence_number: nextSeq(), output_index: 0, item: { id: itemId, type: "message", status: "in_progress", role: "assistant", content: [] } });
+  yield encodeSseEvent("response.content_part.added", { type: "response.content_part.added", sequence_number: nextSeq(), item_id: itemId, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
+
+  try {
+    for await (const evt of runFusionStream(ctx.deps.router, plan, payload)) {
+      if (evt.type === "panel_done") {
+        steps.push(step(`Panel: ${evt.response.model}`, "fusion", evt.response.status === "success" ? "success" : "error", `${evt.response.model} ${evt.response.status} ${evt.response.latency_ms}ms`));
+      } else if (evt.type === "synth_delta") {
+        textParts.push(evt.text);
+        yield encodeSseEvent("response.output_text.delta", { type: "response.output_text.delta", sequence_number: nextSeq(), item_id: itemId, output_index: 0, content_index: 0, delta: evt.text });
+      } else if (evt.type === "done") {
+        fusionResult = { panel_responses: evt.panel_responses, tokens_in: evt.total_tokens_in, tokens_out: evt.total_tokens_out, latency: evt.total_latency_ms };
+      } else if (evt.type === "error") {
+        yield encodeSseEvent("response.failed", { type: "response.failed", sequence_number: nextSeq(), response: { id: responseId, status: "failed", error: { message: evt.message } } });
+      }
+    }
+  } catch (err) {
+    yield encodeSseEvent("response.failed", { type: "response.failed", sequence_number: nextSeq(), response: { id: responseId, status: "failed", error: { message: err instanceof Error ? err.message : String(err) } } });
+  }
+
+  const text = textParts.join("");
+  yield encodeSseEvent("response.output_text.done", { type: "response.output_text.done", sequence_number: nextSeq(), item_id: itemId, output_index: 0, content_index: 0, text });
+  yield encodeSseEvent("response.content_part.done", { type: "response.content_part.done", sequence_number: nextSeq(), item_id: itemId, output_index: 0, content_index: 0, part: { type: "output_text", text, annotations: [] } });
+  yield encodeSseEvent("response.output_item.done", { type: "response.output_item.done", sequence_number: nextSeq(), output_index: 0, item: { id: itemId, type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text, annotations: [] }] } });
+  yield encodeSseEvent("response.completed", { type: "response.completed", sequence_number: nextSeq(), response: { id: responseId, object: "response", created_at: Math.floor(Date.now() / 1000), status: "completed", model: incomingModel, output: [{ id: itemId, type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text, annotations: [] }] }], output_text: text, usage: { input_tokens: fusionResult?.tokens_in ?? 0, output_tokens: fusionResult?.tokens_out ?? 0, total_tokens: (fusionResult?.tokens_in ?? 0) + (fusionResult?.tokens_out ?? 0) } } });
+  yield encodeDone();
+
+  if (fusionResult) {
+    steps.push(step("Fusion Pipeline", "fusion", "success", `${plan.strategy}: ${fusionResult.panel_responses.length} calls, synth streamed`));
+    await writeTrace(ctx, traceRecord({
+      trace_id: traceId, status: "success", latency_ms: fusionResult.latency,
+      client_protocol: "openai_responses", client_name: "unknown",
+      incoming_model: incomingModel, upstream_model: targetModel,
+      usage: { inputTokens: fusionResult.tokens_in, outputTokens: fusionResult.tokens_out, totalTokens: fusionResult.tokens_in + fusionResult.tokens_out },
+      steps, request: {}, response: { id: responseId, status: "completed", model: incomingModel, output_text: text },
+    }));
+  }
 }
 
 // ---------------------------------------------------------------------------

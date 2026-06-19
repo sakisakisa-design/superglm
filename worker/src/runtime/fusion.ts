@@ -3,18 +3,20 @@
 // When an alias has strategy "fusion" or "self_consistency", the request
 // branches here instead of the normal single-model path.
 //
-// Flow:
-//   1. Build panel payloads (same messages, different models/temperatures)
-//   2. Call all panel models in parallel (Promise.allSettled)
-//   3. Judge model analyzes all responses → structured JSON report
-//   4. Synthesizer model writes the final answer using judge report
-//   5. Return synthesized text + full trace data
+// Flow (streaming):
+//   1. Panel models called in parallel (non-streaming, bounded tokens)
+//   2. Synthesizer streams the final answer using all panel responses
 //
-// MVP: non-streaming only. Streaming fusion falls back to single-model.
+// Flow (non-streaming):
+//   Same, but synthesizer returns a single buffered response.
+//
+// No separate judge step — the synthesizer reads panel responses directly
+// and writes the answer. This cuts latency by ~1/3 vs panel→judge→synth.
 
 import type { FusionPlanConfig, PanelModelSpec } from "../types/config";
 import type { ProviderRouter } from "../upstream/router";
-import { callOpenAIChat } from "../upstream/providerClient";
+import { callOpenAIChat, iterOpenAIChatStream } from "../upstream/providerClient";
+import { openaiStreamDelta } from "../adapters/openaiOut";
 
 export interface PanelResponse {
   provider_id: string;
@@ -27,24 +29,21 @@ export interface PanelResponse {
   error?: string;
 }
 
-export interface JudgeReport {
-  consensus: string[];
-  conflicts: string[];
-  missing_points: string[];
-  best_sources: string[];
-  risk_flags: string[];
-  recommended_plan: string;
-}
-
 export interface FusionResult {
   panel_responses: PanelResponse[];
-  judge_report: JudgeReport | null;
   synthesized_content: string;
   total_latency_ms: number;
   total_tokens_in: number;
   total_tokens_out: number;
   strategy: string;
 }
+
+export type FusionStreamEvent =
+  | { type: "panel_done"; response: PanelResponse }
+  | { type: "synth_start" }
+  | { type: "synth_delta"; text: string }
+  | { type: "done"; panel_responses: PanelResponse[]; total_tokens_in: number; total_tokens_out: number; total_latency_ms: number }
+  | { type: "error"; message: string };
 
 const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_TIMEOUT = 120000;
@@ -121,76 +120,17 @@ function buildPanelSpecs(plan: FusionPlanConfig): PanelModelSpec[] {
   return plan.panel_models ?? [];
 }
 
-function buildJudgePrompt(panelResponses: PanelResponse[], originalMessages: unknown[]): string {
-  const validResponses = panelResponses.filter((r) => r.status === "success" && r.content);
-  const parts: string[] = [
-    "You are a judge analyzing multiple AI model responses to the same prompt.",
-    "Compare the responses and produce a JSON report with these fields:",
-    '- "consensus": points all or most models agree on',
-    '- "conflicts": points where models disagree',
-    '- "missing_points": important aspects none of the models addressed',
-    '- "best_sources": which models had the most accurate/useful information',
-    '- "risk_flags": factual errors, hallucinations, or dangerous advice detected',
-    '- "recommended_plan": a brief plan for how to synthesize the best final answer',
-    "",
-    "Respond with ONLY the JSON object, no markdown formatting.",
-    "",
-    "=== Original user messages ===",
-    JSON.stringify(originalMessages.slice(-4)),
-    "",
-  ];
-  validResponses.forEach((r, i) => {
-    parts.push(`=== Panel response ${i + 1} (model: ${r.model}, provider: ${r.provider_id}) ===`);
-    parts.push(r.content.slice(0, 4000));
-    parts.push("");
-  });
-  if (validResponses.length === 0) {
-    parts.push("=== All panel responses failed ===");
-    panelResponses.forEach((r, i) => {
-      parts.push(`Panel ${i + 1} (${r.model}): ${r.status} - ${r.error ?? "no content"}`);
-    });
-  }
-  return parts.join("\n");
-}
-
-function parseJudgeReport(text: string): JudgeReport | null {
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return null;
-  try {
-    const obj = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
-    return {
-      consensus: Array.isArray(obj.consensus) ? (obj.consensus as string[]) : [],
-      conflicts: Array.isArray(obj.conflicts) ? (obj.conflicts as string[]) : [],
-      missing_points: Array.isArray(obj.missing_points) ? (obj.missing_points as string[]) : [],
-      best_sources: Array.isArray(obj.best_sources) ? (obj.best_sources as string[]) : [],
-      risk_flags: Array.isArray(obj.risk_flags) ? (obj.risk_flags as string[]) : [],
-      recommended_plan: typeof obj.recommended_plan === "string" ? obj.recommended_plan : "",
-    };
-  } catch {
-    return null;
-  }
-}
-
-function buildSynthesizerPrompt(panelResponses: PanelResponse[], judgeReport: JudgeReport | null, originalMessages: unknown[]): string {
-  const validResponses = panelResponses.filter((r) => r.status === "success" && r.content);
+function buildSynthPrompt(panelResponses: PanelResponse[], originalMessages: unknown[]): string {
+  const valid = panelResponses.filter((r) => r.status === "success" && r.content);
   const parts: string[] = [
     "You are the final synthesizer. Write the best possible answer to the user's question.",
-    "Use the panel responses and judge analysis below. Do not mention the panel or judge — just write the answer directly.",
+    "Use the panel responses below. Do not mention the panel — just write the answer directly.",
     "",
     "=== Original user messages ===",
     JSON.stringify(originalMessages.slice(-4)),
     "",
   ];
-  if (judgeReport) {
-    parts.push("=== Judge analysis ===");
-    parts.push(`Consensus: ${judgeReport.consensus.join("; ")}`);
-    parts.push(`Conflicts: ${judgeReport.conflicts.join("; ")}`);
-    parts.push(`Missing points: ${judgeReport.missing_points.join("; ")}`);
-    parts.push(`Risk flags: ${judgeReport.risk_flags.join("; ")}`);
-    parts.push(`Recommended plan: ${judgeReport.recommended_plan}`);
-    parts.push("");
-  }
-  validResponses.forEach((r, i) => {
+  valid.forEach((r, i) => {
     parts.push(`=== Panel response ${i + 1} (model: ${r.model}) ===`);
     parts.push(r.content.slice(0, 6000));
     parts.push("");
@@ -198,6 +138,28 @@ function buildSynthesizerPrompt(panelResponses: PanelResponse[], judgeReport: Ju
   return parts.join("\n");
 }
 
+async function runPanels(
+  router: ProviderRouter,
+  plan: FusionPlanConfig,
+  basePayload: Record<string, unknown>,
+): Promise<{ responses: PanelResponse[]; messages: unknown[] }> {
+  const maxTokens = plan.max_tokens_per_panel ?? DEFAULT_MAX_TOKENS;
+  const timeoutMs = plan.timeout_ms ?? DEFAULT_TIMEOUT;
+  const messages = (basePayload.messages as unknown[]) ?? [];
+  const specs = buildPanelSpecs(plan);
+
+  const panelPromises = specs.map((spec) =>
+    callPanel(router, { ...basePayload, temperature: spec.temperature ?? 0.7 }, spec.model, spec.provider_id, maxTokens, timeoutMs),
+  );
+  const settled = await Promise.allSettled(panelPromises);
+  const responses: PanelResponse[] = settled.map((s, i) => {
+    if (s.status === "fulfilled") return s.value;
+    return { provider_id: specs[i]?.provider_id ?? "?", model: specs[i]?.model ?? "?", status: "error", latency_ms: 0, tokens_in: 0, tokens_out: 0, content: "", error: String(s.reason).slice(0, 300) };
+  });
+  return { responses, messages };
+}
+
+/** Non-streaming fusion: panel → synthesizer (buffered). */
 export async function runFusionPipeline(
   router: ProviderRouter,
   plan: FusionPlanConfig,
@@ -206,47 +168,14 @@ export async function runFusionPipeline(
   const start = Date.now();
   const maxTokens = plan.max_tokens_per_panel ?? DEFAULT_MAX_TOKENS;
   const timeoutMs = plan.timeout_ms ?? DEFAULT_TIMEOUT;
-  const messages = (payload.messages as unknown[]) ?? [];
   const basePayload = { ...payload };
   delete basePayload.stream;
 
-  const specs = buildPanelSpecs(plan);
-
-  const panelPromises = specs.map((spec) =>
-    callPanel(router, { ...basePayload, temperature: spec.temperature ?? 0.7 }, spec.model, spec.provider_id, maxTokens, timeoutMs),
-  );
-  const settled = await Promise.allSettled(panelPromises);
-  const panelResponses: PanelResponse[] = settled.map((s, i) => {
-    if (s.status === "fulfilled") return s.value;
-    return { provider_id: specs[i]?.provider_id ?? "?", model: specs[i]?.model ?? "?", status: "error", latency_ms: 0, tokens_in: 0, tokens_out: 0, content: "", error: String(s.reason).slice(0, 300) };
-  });
-
-  let judgeReport: JudgeReport | null = null;
-  if (panelResponses.some((r) => r.status === "success" && r.content)) {
-    const judgePrompt = buildJudgePrompt(panelResponses, messages);
-    try {
-      const judgePayload = {
-        ...basePayload,
-        model: plan.judge_model,
-        messages: [{ role: "user", content: judgePrompt }],
-        max_tokens: 2048,
-        temperature: 0.2,
-        stream: false,
-      };
-      const judgeCandidates = await router.resolveCandidates(plan.judge_model, plan.judge_provider_id);
-      const judgeProvider = judgeCandidates[0];
-      if (judgeProvider) {
-        const judgeResp = await callOpenAIChat(judgePayload, judgeProvider, timeoutMs);
-        judgeReport = parseJudgeReport(extractText(judgeResp));
-      }
-    } catch {
-      // judge failure is non-fatal; synthesizer can still work with raw panel responses
-    }
-  }
+  const { responses: panelResponses, messages } = await runPanels(router, plan, basePayload);
 
   let synthesizedContent = "";
   if (panelResponses.some((r) => r.status === "success" && r.content)) {
-    const synthPrompt = buildSynthesizerPrompt(panelResponses, judgeReport, messages);
+    const synthPrompt = buildSynthPrompt(panelResponses, messages);
     try {
       const synthPayload = {
         ...basePayload,
@@ -272,7 +201,7 @@ export async function runFusionPipeline(
           content: synthesizedContent,
         });
       }
-    } catch (err) {
+    } catch {
       const bestPanel = panelResponses.filter((r) => r.status === "success").sort((a, b) => b.content.length - a.content.length)[0];
       synthesizedContent = bestPanel?.content ?? "";
     }
@@ -283,11 +212,90 @@ export async function runFusionPipeline(
 
   return {
     panel_responses: panelResponses,
-    judge_report: judgeReport,
     synthesized_content: synthesizedContent,
     total_latency_ms: Date.now() - start,
     total_tokens_in: totalTokensIn,
     total_tokens_out: totalTokensOut,
     strategy: plan.strategy,
+  };
+}
+
+/** Streaming fusion: panel (non-streaming) → synthesizer (streaming). Yields events. */
+export async function* runFusionStream(
+  router: ProviderRouter,
+  plan: FusionPlanConfig,
+  payload: Record<string, unknown>,
+): AsyncGenerator<FusionStreamEvent, void, unknown> {
+  const start = Date.now();
+  const maxTokens = plan.max_tokens_per_panel ?? DEFAULT_MAX_TOKENS;
+  const timeoutMs = plan.timeout_ms ?? DEFAULT_TIMEOUT;
+  const basePayload = { ...payload };
+  delete basePayload.stream;
+
+  // 1. Panel calls in parallel
+  const { responses: panelResponses, messages } = await runPanels(router, plan, basePayload);
+  for (const r of panelResponses) {
+    yield { type: "panel_done", response: r };
+  }
+
+  // 2. Synthesizer streaming
+  if (!panelResponses.some((r) => r.status === "success" && r.content)) {
+    yield { type: "error", message: "all panel responses failed" };
+    return;
+  }
+
+  const synthPrompt = buildSynthPrompt(panelResponses, messages);
+  const synthPayload = {
+    ...basePayload,
+    model: plan.synthesizer_model,
+    messages: [{ role: "user", content: synthPrompt }],
+    max_tokens: maxTokens,
+    temperature: 0.5,
+    stream: true,
+  };
+
+  yield { type: "synth_start" };
+
+  try {
+    const synthCandidates = await router.resolveCandidates(plan.synthesizer_model, plan.synthesizer_provider_id);
+    const synthProvider = synthCandidates[0];
+    if (!synthProvider) {
+      throw new Error("no synthesizer provider available");
+    }
+    let synthTokensOut = 0;
+    for await (const data of iterOpenAIChatStream(synthPayload, synthProvider, timeoutMs)) {
+      const { text } = openaiStreamDelta(data);
+      if (text) {
+        synthTokensOut += Math.ceil(text.length / 4);
+        yield { type: "synth_delta", text };
+      }
+      if (data === "[DONE]") break;
+    }
+    panelResponses.push({
+      provider_id: synthProvider.id,
+      model: plan.synthesizer_model,
+      status: "success",
+      latency_ms: 0,
+      tokens_in: 0,
+      tokens_out: synthTokensOut,
+      content: "",
+    });
+  } catch (err) {
+    const bestPanel = panelResponses.filter((r) => r.status === "success").sort((a, b) => b.content.length - a.content.length)[0];
+    if (bestPanel) {
+      yield { type: "synth_delta", text: bestPanel.content };
+    } else {
+      yield { type: "error", message: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  const totalTokensIn = panelResponses.reduce((sum, r) => sum + r.tokens_in, 0);
+  const totalTokensOut = panelResponses.reduce((sum, r) => sum + r.tokens_out, 0);
+  yield {
+    type: "done",
+    panel_responses: panelResponses,
+    total_tokens_in: totalTokensIn,
+    total_tokens_out: totalTokensOut,
+    total_latency_ms: Date.now() - start,
   };
 }
