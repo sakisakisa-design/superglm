@@ -198,6 +198,78 @@ async function runPanels(
   return { responses, messages };
 }
 
+/**
+ * Streaming variant of runPanels: panels are launched in parallel, but each
+ * panel result is yielded the moment it settles, instead of waiting for
+ * Promise.allSettled. This lets the client see per-panel progress during the
+ * (often long) phase where the slowest panel is still running.
+ *
+ * The returned generator also yields FusionConfigError eagerly (before any panel
+ * call) when the plan has no panels, mirroring runPanels.
+ *
+ * Implementation note: a self-resetting gate (gateResolve) is used so the
+ * generator loop can await "at least one new result is available" without busy
+ * polling. Settled results land in a FIFO queue; the main loop drains it.
+ */
+async function* runPanelsStreaming(
+  router: ProviderRouter,
+  plan: FusionPlanConfig,
+  basePayload: Record<string, unknown>,
+): AsyncGenerator<PanelResponse, void, unknown> {
+  const maxTokens = plan.max_tokens_per_panel ?? DEFAULT_MAX_TOKENS;
+  const timeoutMs = plan.timeout_ms ?? DEFAULT_TIMEOUT;
+  const specs = buildPanelSpecs(plan);
+
+  if (specs.length === 0) {
+    throw new FusionConfigError(
+      plan.strategy === "self_consistency"
+        ? "fusion self_consistency plan has no model/samples configured"
+        : "fusion plan has no panel_models configured",
+    );
+  }
+
+  const queue: PanelResponse[] = [];
+  let gateResolve: (() => void) | null = null;
+  const signal = (): void => {
+    if (gateResolve) {
+      const r = gateResolve;
+      gateResolve = null;
+      r();
+    }
+  };
+  const waitForSettle = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      gateResolve = resolve;
+    });
+
+  let pending = 0;
+  specs.forEach((spec) => {
+    pending++;
+    callPanel(router, { ...basePayload, temperature: spec.temperature ?? 0.7 }, spec.model, spec.provider_id, maxTokens, timeoutMs)
+      .then((r) => queue.push(r), (err) =>
+        queue.push({ provider_id: spec.provider_id ?? "?", model: spec.model ?? "?", status: "error", latency_ms: 0, tokens_in: 0, tokens_out: 0, content: "", error: String(err).slice(0, 300) }),
+      )
+      .finally(() => {
+        pending--;
+        signal();
+      });
+  });
+
+  const responses: PanelResponse[] = [];
+  // Drain queued results as they arrive. Each iteration: if queue has items,
+  // shift+yield; else if panels still pending, await the gate; else done.
+  while (pending > 0 || queue.length > 0) {
+    if (queue.length === 0) {
+      await waitForSettle();
+    }
+    while (queue.length > 0) {
+      const r = queue.shift()!;
+      responses.push(r);
+      yield r;
+    }
+  }
+}
+
 /** Non-streaming fusion: panel → synthesizer (buffered). */
 export async function runFusionPipeline(
   router: ProviderRouter,
@@ -273,11 +345,14 @@ export async function* runFusionStream(
   const basePayload = { ...payload };
   delete basePayload.stream;
 
-  // 1. Panel calls in parallel
-  const { responses: panelResponses, messages } = await runPanels(router, plan, basePayload);
-  for (const r of panelResponses) {
+  // 1. Panel calls in parallel — each panel is emitted the moment it settles
+  //    (not after all panels finish), so the client sees per-panel progress.
+  const panelResponses: PanelResponse[] = [];
+  for await (const r of runPanelsStreaming(router, plan, basePayload)) {
+    panelResponses.push(r);
     yield { type: "panel_done", response: r };
   }
+  const messages = (basePayload.messages as unknown[]) ?? [];
 
   // 2. Synthesizer streaming. If every panel failed there is nothing to
   // synthesize: emit a terminal error and return WITHOUT a done event, so the

@@ -154,6 +154,45 @@ describe("runFusionStream failure semantics", () => {
   });
 });
 
+describe("runFusionStream per-panel progressive yield", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("yields panel_done events as each panel settles, not as a batch after all finish", async () => {
+    // Stagger the two panel calls: the first settles immediately, the second
+    // settles only after a delay. If the runner waited for all panels (allSettled)
+    // both panel_done events would arrive together after the delay; a streaming
+    // implementation yields the first one before the second settles.
+    const router = routerWithProviders([
+      { id: "p", name: "P", protocol: "openai", base_url: "https://x/v1", api_key: "k" },
+    ]);
+    let callCount = 0;
+    const slowDelay = 40;
+    globalThis.fetch = vi.fn(async () => {
+      callCount++;
+      const isFirstCall = callCount === 1;
+      if (!isFirstCall) await new Promise((r) => setTimeout(r, slowDelay));
+      return openaiOk("panel");
+    }) as unknown as typeof fetch;
+
+    const timestamps: number[] = [];
+    const start = Date.now();
+    for await (const evt of runFusionStream(router, PLAN, { messages: [{ role: "user", content: "hi" }] })) {
+      if (evt.type === "panel_done") timestamps.push(Date.now() - start);
+    }
+    expect(timestamps.length).toBe(2);
+    // First panel_done must arrive well before the second (which waits slowDelay).
+    expect(timestamps[1]! - timestamps[0]!).toBeGreaterThan(slowDelay - 15);
+    // And the first must arrive quickly, before the slow panel's delay elapses.
+    expect(timestamps[0]!).toBeLessThan(slowDelay);
+  });
+});
+
 describe("panelResponsesForTrace", () => {
   it("truncates panel content to the per-panel cap", () => {
     const huge = "x".repeat(8000);

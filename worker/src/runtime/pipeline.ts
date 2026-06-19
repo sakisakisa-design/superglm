@@ -843,6 +843,29 @@ async function writeFusionErrorTrace(
   }));
 }
 
+/**
+ * Inject vision evidence packets into a fusion (OpenAI-format) payload when the
+ * incoming request carries images, mirroring what the single-model path does.
+ * Fusion panels may be non-vision models, so images are converted to a textual
+ * evidence system message instead of being passed through. Mutates `steps` to
+ * record the injection. Returns the (possibly modified) payload.
+ */
+function injectVisionEvidence(
+  ctx: RequestContext,
+  payload: Record<string, unknown>,
+  protocol: "anthropic" | "openai" | "openai_responses",
+  body: Record<string, unknown>,
+  steps: StepLike[],
+): Record<string, unknown> {
+  const images = detectImages(protocol, body);
+  if (images.length === 0) return payload;
+  const packets = makeEvidencePackets(images, sessionKey(ctx.request, body));
+  const evidenceText = evidenceSystemMessage(packets);
+  if (!evidenceText) return payload;
+  steps.push(step("Vision Evidence", "worker", "success", `${packets.length} image(s) -> evidence packet`));
+  return injectEvidenceIntoChatPayload(payload, evidenceText);
+}
+
 async function handleFusionAsAnthropic(
   ctx: RequestContext,
   body: Record<string, unknown>,
@@ -853,7 +876,8 @@ async function handleFusionAsAnthropic(
   wantStream: boolean,
   steps: StepLike[],
 ): Promise<Response> {
-  const fusionPayload = anthropicToOpenaiPayload(body, targetModel, "strip_for_non_anthropic_upstream", "openai").payload;
+  let fusionPayload = anthropicToOpenaiPayload(body, targetModel, "strip_for_non_anthropic_upstream", "openai").payload;
+  fusionPayload = injectVisionEvidence(ctx, fusionPayload, "anthropic", body, steps);
 
   if (!wantStream) {
     let result;
@@ -898,6 +922,7 @@ async function handleFusionAsOpenAI(
   wantStream: boolean,
   steps: StepLike[],
 ): Promise<Response> {
+  payload = injectVisionEvidence(ctx, payload, "openai", body, steps);
   if (!wantStream) {
     let result;
     try {
@@ -943,6 +968,7 @@ async function handleFusionAsResponses(
   wantStream: boolean,
   steps: StepLike[],
 ): Promise<Response> {
+  payload = injectVisionEvidence(ctx, payload, "openai_responses", body, steps);
   if (!wantStream) {
     let result;
     try {
