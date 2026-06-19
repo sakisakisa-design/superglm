@@ -1,10 +1,7 @@
 .env
 .env.*
 !.env.example
-
-__pycache__/
-*.py[cod]
-.pytest_cache/
+.dev.vars
 
 data/
 *.sqlite3
@@ -18,3 +15,4 @@ visual_coding_test/
 node_modules/
 dist/
 build/
+.wrangler/

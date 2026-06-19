@@ -1,0 +1,27 @@
+{
+  "name": "superglm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm --prefix worker install && npm --prefix worker run build",
+    "deploy": "npm run build && wrangler deploy",
+    "cf:dry-run": "npm run build && wrangler deploy --dry-run",
+    "worker:typecheck": "npm --prefix worker run typecheck",
+    "worker:test": "npm --prefix worker test",
+    "worker:build": "npm --prefix worker run build"
+  },
+  "devDependencies": {
+    "wrangler": "^4.102.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "D1 database used for providers, aliases, dashboard config, trace logs, and gateway keys."
+      },
+      "SUPERDS_LOCAL_API_KEY": {
+        "description": "Gateway admin key used by the hosted dashboard and client requests. Generate a strong random value and keep it secret."
+      }
+    }
+  }
+}
