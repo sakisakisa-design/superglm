@@ -15,7 +15,7 @@ local filesystem, no SQLite files — just a Worker, D1, and Workers Static Asse
 | Location | `backend/app` | `worker/` |
 | Runtime | Python + FastAPI + Uvicorn | Cloudflare Worker (TypeScript) |
 | Persistence | `config/superds.json` + `data/traces.sqlite3` | D1 (`config`, `provider_profiles`, `aliases`, `traces`, `api_keys`) |
-| Dashboard | served by FastAPI | built by Vite, served by Workers Static Assets |
+| Dashboard | served by FastAPI | served by Workers Static Assets |
 | Upstream HTTP | `httpx` | Workers `fetch` |
 | Deploy | `docker compose up` | Deploy to Cloudflare button, Workers Builds, or `wrangler deploy` |
 
@@ -142,7 +142,7 @@ npm install
 npm run cf:bootstrap                       # create D1 and write database_id into wrangler.jsonc
 npx wrangler d1 migrations apply DB --remote              # or --local
 npm run dev                                 # wrangler dev (API + proxy)
-npm run build                               # vite build (dashboard -> dist/client)
+npm run build                               # optional Vite build check for dashboard source
 npm run typecheck
 npm test
 ```
@@ -165,24 +165,25 @@ upstream later. To deploy without local Wrangler:
 2. Select Create application.
 3. Select Import a repository.
 4. Connect GitHub and choose your fork of `sakisakisa-design/superglm`.
-5. Set root directory to `worker`.
+5. Leave root directory as the repository root.
 6. Set production branch to `main`.
 7. If Cloudflare shows resource setup, keep/create the D1 binding named `DB`.
 8. Leave Build command empty.
-9. Set Deploy command to `npm run deploy`.
+9. Set Deploy command to `npx wrangler deploy`.
 10. Add runtime secret `SUPERDS_LOCAL_API_KEY`.
 11. Save and deploy.
 
-`npm run deploy` builds the dashboard and deploys the Worker. The Worker creates
-the D1 tables it needs on first request, so first-time dashboard deploys do not
-need a local migration step.
+The Worker dashboard is committed under `worker/assets`, so Cloudflare GitHub
+deployments do not need a separate dashboard build step. The Worker creates the
+D1 tables it needs on first request, so first-time dashboard deploys do not need
+a local migration step.
 
 If the first build says the `DB` binding is missing, create a D1 database in the
 Cloudflare dashboard, bind it to the Worker as `DB`, then retry the deployment.
 
 If a live Worker does not redeploy after a GitHub push, check that Cloudflare is
 connected to your fork and the same branch you are pushing, root directory is
-`worker`, and the Worker name matches `worker/wrangler.jsonc` (`superglm` by
+the repository root, and the Worker name matches `wrangler.jsonc` (`superglm` by
 default).
 
 ### Quick demo: Deploy to Cloudflare button
@@ -211,8 +212,10 @@ npx wrangler secret put SUPERDS_LOCAL_API_KEY
 npm run deploy
 ```
 
-`wrangler.jsonc` binds `DB` (D1) and serves the built dashboard from `./dist/client`
-as Workers Static Assets with single-page-application fallback.
+`wrangler.jsonc` binds `DB` (D1) and serves the dashboard from `./worker/assets`
+as Workers Static Assets with single-page-application fallback. The
+`worker/wrangler.jsonc` config serves the same files from `./assets` when running
+inside the `worker` directory.
 
 If you already created the D1 database manually, copy its `database_id` into
 `worker/wrangler.jsonc` instead of running `npm run cf:bootstrap`.

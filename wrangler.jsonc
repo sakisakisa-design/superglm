@@ -1,11 +1,11 @@
 {
-  // SuperDeepSeek Worker — Cloudflare Worker + Static Assets
-  // Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+  // Root config for Cloudflare GitHub deployments that run `npx wrangler deploy`
+  // from the repository root.
   "name": "superglm",
-  "main": "src/index.ts",
+  "main": "worker/src/index.ts",
   "compatibility_date": "2026-06-01",
   "assets": {
-    "directory": "./assets",
+    "directory": "./worker/assets",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
   },
@@ -13,7 +13,7 @@
     {
       "binding": "DB",
       "database_name": "superglm",
-      "migrations_dir": "migrations"
+      "migrations_dir": "worker/migrations"
     }
   ],
   "observability": {

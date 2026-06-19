@@ -36,17 +36,18 @@ sync from upstream later. You do not need local Wrangler for this path:
 2. Select Create application.
 3. Select Import a repository.
 4. Connect GitHub and choose your fork of `sakisakisa-design/superglm`.
-5. Set the root directory to `worker`.
+5. Leave the root directory as the repository root.
 6. Use production branch `main`.
 7. If Cloudflare shows resource setup, keep/create the D1 binding named `DB`.
 8. Leave Build command empty.
-9. Set Deploy command to `npm run deploy`.
+9. Set Deploy command to `npx wrangler deploy`.
 10. Add the runtime secret `SUPERDS_LOCAL_API_KEY`.
 11. Save and deploy.
 
-`npm run deploy` builds the dashboard and deploys the Worker. The Worker creates
-the D1 tables it needs on first request, so first-time dashboard deploys do not
-need a local migration step.
+The Worker dashboard is committed under `worker/assets`, so the Cloudflare
+GitHub deployment does not need a separate dashboard build step. The Worker
+creates the D1 tables it needs on first request, so first-time dashboard deploys
+do not need a local migration step.
 
 If the first build says the `DB` binding is missing, create a D1 database in the
 Cloudflare dashboard, bind it to the Worker as `DB`, then retry the deployment.
@@ -55,8 +56,8 @@ If the live Worker does not redeploy after a GitHub push, check:
 
 - Cloudflare is connected to your fork and the branch you are pushing.
 - Workers & Pages -> your Worker -> Settings -> Builds shows GitHub connected.
-- Root directory is `worker`.
-- The Worker name matches `worker/wrangler.jsonc`; the default name is `superglm`.
+- Root directory is the repository root.
+- The Worker name matches `wrangler.jsonc`; the default name is `superglm`.
 - Use Retry deployment / Deploy latest commit once and read the build log for the
   exact error.
 
