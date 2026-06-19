@@ -86,7 +86,7 @@ export class ConfigStore {
 
   async listAliases(): Promise<StoredAlias[]> {
     const result = await this.db
-      .prepare("SELECT * FROM aliases WHERE enabled = 1 ORDER BY alias ASC")
+      .prepare("SELECT * FROM aliases ORDER BY alias ASC")
       .all<AliasRow>();
     return (result.results ?? []).map(aliasFromRow);
   }
@@ -121,16 +121,16 @@ export class ConfigStore {
 }
 
 function providerFromRow(row: ProviderProfileRow): ProviderConfig {
+  const models = parseJsonColumn<string[]>(row.models, []);
   const provider: ProviderConfig = {
     id: String(row.id),
     name: row.name,
     protocol: row.protocol === "anthropic" ? "anthropic" : "openai",
     base_url: row.base_url,
-    capabilities: {
-      models: parseJsonColumn<string[]>(row.models, []),
-    },
+    capabilities: { models },
     enabled: Boolean(row.enabled),
   };
+  (provider as Record<string, unknown>)["models"] = models;
   if (row.api_key) provider.api_key = row.api_key;
   if (row.default_model) provider.default_model = row.default_model;
   if (row.timeout_ms != null) provider.degraded_threshold_ms = row.timeout_ms;

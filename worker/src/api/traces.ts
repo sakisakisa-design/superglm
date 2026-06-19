@@ -10,7 +10,7 @@ function parseLimit(raw: string | null): number {
 export async function listTraces(ctx: RouteCtx): Promise<Response> {
   const limit = parseLimit(ctx.url.searchParams.get("limit"));
   const traces = await ctx.traceStore.list(limit);
-  return jsonResponse(200, { traces });
+  return jsonResponse(200, { data: traces, traces });
 }
 
 export async function getTrace(ctx: RouteCtx): Promise<Response> {

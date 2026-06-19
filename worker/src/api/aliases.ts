@@ -6,7 +6,7 @@ import { jsonResponse, readJsonBody, type RouteCtx } from "../router";
 
 export async function listAliases(ctx: RouteCtx): Promise<Response> {
   const aliases = await ctx.configStore.listAliases();
-  return jsonResponse(200, { aliases });
+  return jsonResponse(200, { data: aliases, aliases });
 }
 
 export async function putAlias(ctx: RouteCtx): Promise<Response> {
@@ -14,25 +14,29 @@ export async function putAlias(ctx: RouteCtx): Promise<Response> {
   if (body instanceof Response) return body;
   const alias = typeof body["alias"] === "string" ? body["alias"] : "";
   const targetModel = typeof body["target_model"] === "string" ? body["target_model"] : "";
-  if (!alias || !targetModel) {
+  if (!alias && !targetModel) {
     return errorResponse(400, "invalid_request", "alias and target_model required");
   }
+  const aliasName = alias || targetModel;
   const stored: StoredAlias = {
     id: typeof body["id"] === "string" ? body["id"] : randomId(12),
-    alias,
-    target_model: targetModel,
+    alias: aliasName,
+    target_model: targetModel || aliasName,
     profile_id: typeof body["profile_id"] === "string" ? body["profile_id"] : "",
     role: typeof body["role"] === "string" ? (body["role"] as ModelRole) : "main",
     strategy: typeof body["strategy"] === "string" ? body["strategy"] : "round_robin",
   };
   if (typeof body["provider_id"] === "string") stored.provider_id = body["provider_id"];
   if (body["enabled"] === false) stored.enabled = false;
+  if (typeof body["notes"] === "string") (stored as Record<string, unknown>)["notes"] = body["notes"];
   await ctx.configStore.upsertAlias(stored);
-  return jsonResponse(200, stored);
+  const all = await ctx.configStore.listAliases();
+  return jsonResponse(200, { data: all });
 }
 
 export async function deleteAlias(ctx: RouteCtx): Promise<Response> {
   const alias = ctx.params["alias"] ?? "";
   await ctx.configStore.deleteAlias(decodeURIComponent(alias));
-  return jsonResponse(200, { deleted: alias });
+  const all = await ctx.configStore.listAliases();
+  return jsonResponse(200, { data: all, deleted: alias });
 }

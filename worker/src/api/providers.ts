@@ -5,7 +5,7 @@ import { jsonResponse, readJsonBody, type RouteCtx } from "../router";
 
 export async function listProviders(ctx: RouteCtx): Promise<Response> {
   const providers = await ctx.configStore.listProviderProfiles();
-  return jsonResponse(200, { providers: maskProviders(providers) });
+  return jsonResponse(200, { data: maskProviders(providers), providers: maskProviders(providers) });
 }
 
 export async function getProvider(ctx: RouteCtx): Promise<Response> {
@@ -22,18 +22,22 @@ export async function putProvider(ctx: RouteCtx): Promise<Response> {
     return errorResponse(400, "invalid_request", "provider id required");
   }
   const provider = body as unknown as ProviderConfig;
+  if (Array.isArray(body["models"]) && !provider.capabilities?.models) {
+    provider.capabilities = { ...provider.capabilities, models: body["models"] as string[] };
+  }
   const existing = await ctx.configStore.getProviderProfile(provider.id);
   if (existing?.api_key && isPreserveKeyValue(provider.api_key)) {
     provider.api_key = existing.api_key;
   }
   await ctx.configStore.upsertProviderProfile(provider);
-  return jsonResponse(200, maskProvider(provider));
+  const saved = await ctx.configStore.getProviderProfile(provider.id);
+  return jsonResponse(200, { provider: saved ? maskProvider(saved) : maskProvider(provider), data: saved ? maskProvider(saved) : maskProvider(provider) });
 }
 
 export async function deleteProvider(ctx: RouteCtx): Promise<Response> {
   const id = ctx.params["id"] ?? "";
   await ctx.configStore.deleteProviderProfile(id);
-  return jsonResponse(200, { deleted: id });
+  return jsonResponse(200, { deleted: id, data: id });
 }
 
 function isPreserveKeyValue(key: string | undefined): boolean {

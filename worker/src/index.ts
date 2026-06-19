@@ -18,10 +18,12 @@ import { listAliases, putAlias, deleteAlias } from "./api/aliases";
 import { listTraces, getTrace } from "./api/traces";
 import { testConnection } from "./api/testConnection";
 import { claudeSmoke } from "./api/claudeSmoke";
-import { healthHandler } from "./api/health";
+import { healthWithConfig } from "./api/health";
 import { listProviderPresets } from "./api/providerPresets";
 import { listModelCapabilities } from "./api/modelCapabilities";
 import { visionCheck } from "./api/visionCheck";
+import { clearLogs } from "./api/logs";
+import { routerStatus } from "./api/routerStatus";
 import { authenticate, authDenied } from "./auth/auth";
 import { ConfigStore } from "./storage/configStore";
 import { ensureD1Schema, __resetD1SchemaForTest } from "./storage/d1";
@@ -78,7 +80,13 @@ async function serveApi(
   const path = url.pathname;
 
   // /api/health is the only unauthenticated management endpoint.
-  if (path === "/api/health" && method === "GET") return healthHandler(env);
+  if (path === "/api/health" && method === "GET") {
+    const config = await loadConfig(env);
+    const store = new ConfigStore(env.DB);
+    const traceStore = new TraceStore(env.DB);
+    const ctx = { env, config, configStore: store, traceStore, request, params: {} as Record<string, string>, url };
+    return healthWithConfig(ctx);
+  }
 
   // All other /api/* require admin auth (same key pool as the proxy endpoints).
   const config = await loadConfig(env);
@@ -146,6 +154,10 @@ async function serveApi(
   if (path === "/api/provider-presets" && method === "GET") return listProviderPresets(ctx);
   if (path === "/api/model-capabilities" && method === "GET") return listModelCapabilities(ctx);
   if (path === "/api/vision-check" && method === "POST") return visionCheck(ctx);
+
+  // ---- logs / router status ----
+  if (path === "/api/logs/clear" && method === "POST") return clearLogs(ctx);
+  if (path === "/api/router/status" && method === "GET") return routerStatus(ctx);
 
   return null;
 }

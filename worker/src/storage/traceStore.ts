@@ -68,6 +68,10 @@ export class TraceStore {
       .all<TraceRow>();
     return (result.results ?? []).map(rowToTrace);
   }
+
+  async clear(): Promise<void> {
+    await this.db.prepare("DELETE FROM traces").run();
+  }
 }
 
 function rowToTrace(row: TraceRow): TraceRecord {

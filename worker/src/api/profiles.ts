@@ -2,10 +2,25 @@ import type { ProfileConfig } from "../types/config";
 import { errorResponse } from "../utils/errors";
 import { randomId } from "../utils/ids";
 import { loadConfig, saveConfig } from "./dashboard";
+import { maskProviders } from "../utils/redact";
 import { jsonResponse, readJsonBody, type RouteCtx } from "../router";
 
+function modelsFromConfig(ctx: RouteCtx) {
+  return (ctx.config.models ?? []).map((m) => ({
+    ...m,
+    id: m.id || `${m.provider_id}/${m.actual_model}`,
+  }));
+}
+
 export async function listProfiles(ctx: RouteCtx): Promise<Response> {
-  return jsonResponse(200, { profiles: ctx.config.profiles });
+  const providers = await ctx.configStore.listProviderProfiles();
+  return jsonResponse(200, {
+    data: ctx.config.profiles,
+    models: modelsFromConfig(ctx),
+    providers: maskProviders(providers),
+    default_profile: ctx.config.runtime?.default_profile ?? "default",
+    profiles: ctx.config.profiles,
+  });
 }
 
 export async function createProfile(ctx: RouteCtx): Promise<Response> {
@@ -14,10 +29,14 @@ export async function createProfile(ctx: RouteCtx): Promise<Response> {
   const id = typeof body["id"] === "string" && body["id"] ? body["id"] : `prof_${randomId(10)}`;
   const name = typeof body["name"] === "string" ? body["name"] : "profile";
   const profile = { ...body, id, name } as unknown as ProfileConfig;
+  delete (profile as Record<string, unknown>)["set_default"];
   const config = await loadConfig(ctx.env);
   config.profiles = [...config.profiles.filter((p) => p.id !== id), profile];
+  if (body["set_default"]) {
+    config.runtime = { ...config.runtime, default_profile: id };
+  }
   await saveConfig(ctx.env, config);
-  return jsonResponse(201, profile);
+  return jsonResponse(201, { ok: true, profile, default_profile: config.runtime?.default_profile ?? "default" });
 }
 
 export async function putProfile(ctx: RouteCtx): Promise<Response> {
