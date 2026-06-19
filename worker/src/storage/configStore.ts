@@ -1,5 +1,8 @@
 import type { ModelAlias, ProviderConfig } from "../types/config";
 import { parseJsonColumn } from "./d1";
+import { encryptSecret, decryptSecret } from "./encryptedSecrets";
+
+const ENC_PREFIX = "enc:";
 
 interface ProviderProfileRow {
   id: string | number;
@@ -34,13 +37,19 @@ export interface StoredAlias extends ModelAlias {
 }
 
 export class ConfigStore {
-  constructor(private readonly db: D1Database) {}
+  constructor(
+    private readonly db: D1Database,
+    private readonly encryptionKey?: string,
+  ) {}
 
   async listProviderProfiles(): Promise<ProviderConfig[]> {
     const result = await this.db
       .prepare("SELECT * FROM provider_profiles ORDER BY name ASC")
       .all<ProviderProfileRow>();
-    return (result.results ?? []).map(providerFromRow);
+    const rows = result.results ?? [];
+    const out: ProviderConfig[] = [];
+    for (const row of rows) out.push(await providerFromRow(row, this.encryptionKey));
+    return out;
   }
 
   async getProviderProfile(id: string): Promise<ProviderConfig | null> {
@@ -48,10 +57,14 @@ export class ConfigStore {
       .prepare("SELECT * FROM provider_profiles WHERE id = ?")
       .bind(id)
       .first<ProviderProfileRow>();
-    return row ? providerFromRow(row) : null;
+    return row ? providerFromRow(row, this.encryptionKey) : null;
   }
 
   async upsertProviderProfile(profile: ProviderConfig): Promise<void> {
+    let apiKey = profile.api_key ?? null;
+    if (apiKey && this.encryptionKey) {
+      apiKey = ENC_PREFIX + (await encryptSecret(apiKey, this.encryptionKey));
+    }
     await this.db
       .prepare(
         `INSERT INTO provider_profiles
@@ -71,7 +84,7 @@ export class ConfigStore {
         profile.id,
         profile.name,
         profile.base_url,
-        profile.api_key ?? null,
+        apiKey,
         profile.protocol,
         profile.default_model ?? null,
         JSON.stringify(profile.capabilities?.models ?? []),
@@ -120,7 +133,7 @@ export class ConfigStore {
   }
 }
 
-function providerFromRow(row: ProviderProfileRow): ProviderConfig {
+async function providerFromRow(row: ProviderProfileRow, encryptionKey?: string): Promise<ProviderConfig> {
   const models = parseJsonColumn<string[]>(row.models, []);
   const provider: ProviderConfig = {
     id: String(row.id),
@@ -131,10 +144,22 @@ function providerFromRow(row: ProviderProfileRow): ProviderConfig {
     enabled: Boolean(row.enabled),
   };
   (provider as Record<string, unknown>)["models"] = models;
-  if (row.api_key) provider.api_key = row.api_key;
+  if (row.api_key) {
+    provider.api_key = await decryptApiKey(row.api_key, encryptionKey);
+  }
   if (row.default_model) provider.default_model = row.default_model;
   if (row.timeout_ms != null) provider.degraded_threshold_ms = row.timeout_ms;
   return provider;
+}
+
+async function decryptApiKey(stored: string, encryptionKey?: string): Promise<string> {
+  if (!stored.startsWith(ENC_PREFIX)) return stored;
+  if (!encryptionKey) return stored;
+  try {
+    return await decryptSecret(stored.slice(ENC_PREFIX.length), encryptionKey);
+  } catch {
+    return stored;
+  }
 }
 
 function aliasFromRow(row: AliasRow): StoredAlias {

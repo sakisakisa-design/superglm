@@ -40,7 +40,7 @@ export async function loadConfig(env: Env): Promise<SuperDeepSeekConfig> {
     config = safeParse<SuperDeepSeekConfig>(env.CONFIG_JSON, { ...DEFAULT_CONFIG });
   }
 
-  const store = new ConfigStore(env.DB);
+  const store = new ConfigStore(env.DB, env.ENCRYPTION_KEY);
   try {
     config.providers = await store.listProviderProfiles();
   } catch {
@@ -65,7 +65,7 @@ export async function loadConfig(env: Env): Promise<SuperDeepSeekConfig> {
  * so routing stays consistent with the dashboard view.
  */
 export async function saveConfig(env: Env, config: SuperDeepSeekConfig): Promise<void> {
-  const store = new ConfigStore(env.DB);
+  const store = new ConfigStore(env.DB, env.ENCRYPTION_KEY);
   const existingProviders = await safeListProviders(store);
   const existingById = new Map(existingProviders.map((p) => [p.id, p]));
   config.providers = config.providers.map((provider) => {

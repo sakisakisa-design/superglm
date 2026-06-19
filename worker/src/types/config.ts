@@ -133,7 +133,27 @@ export interface SuperDeepSeekConfig {
   models: ModelConfig[];
   profiles: ProfileConfig[];
   model_aliases: ModelAlias[];
+  fusion_plans?: Record<string, FusionPlanConfig>;
   [k: string]: unknown;
+}
+
+export interface PanelModelSpec {
+  model: string;
+  provider_id?: string;
+  temperature?: number;
+}
+
+export interface FusionPlanConfig {
+  strategy: "fusion" | "self_consistency";
+  panel_models?: PanelModelSpec[];
+  self_consistency?: { model: string; provider_id?: string; samples: number; temperatures?: number[] };
+  judge_model: string;
+  judge_provider_id?: string;
+  synthesizer_model: string;
+  synthesizer_provider_id?: string;
+  max_tokens_per_panel?: number;
+  timeout_ms?: number;
+  blocked_domains?: string[];
 }
 
 export const PROFILE_MODEL_KEYS: Record<ModelRole, string> = {

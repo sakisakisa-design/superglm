@@ -24,7 +24,7 @@ import { listModelCapabilities } from "./api/modelCapabilities";
 import { visionCheck } from "./api/visionCheck";
 import { clearLogs } from "./api/logs";
 import { routerStatus } from "./api/routerStatus";
-import { authenticate, authDenied } from "./auth/auth";
+import { authenticate, authDenied, hasScope, SCOPE_ADMIN, SCOPE_INVOKE } from "./auth/auth";
 import { ConfigStore } from "./storage/configStore";
 import { ensureD1Schema, __resetD1SchemaForTest } from "./storage/d1";
 import { TraceStore } from "./storage/traceStore";
@@ -56,7 +56,7 @@ let cachedSingletons: Singletons | null = null;
 
 function getSingletons(env: Env): Singletons {
   if (!cachedSingletons) {
-    const configStore = new ConfigStore(env.DB);
+    const configStore = new ConfigStore(env.DB, env.ENCRYPTION_KEY);
     const traceStore = new TraceStore(env.DB);
     const router = new ProviderRouter(configStore);
     cachedSingletons = { configStore, traceStore, router };
@@ -68,6 +68,13 @@ function getSingletons(env: Env): Singletons {
 export function __resetSingletonsForTest(): void {
   cachedSingletons = null;
   __resetD1SchemaForTest();
+}
+
+function scopeDenied(): Response {
+  return new Response(
+    JSON.stringify({ error: { type: "insufficient_scope", message: "This key does not have the required scope." } }),
+    { status: 403, headers: { "content-type": "application/json" } },
+  );
 }
 
 async function serveApi(
@@ -82,16 +89,17 @@ async function serveApi(
   // /api/health is the only unauthenticated management endpoint.
   if (path === "/api/health" && method === "GET") {
     const config = await loadConfig(env);
-    const store = new ConfigStore(env.DB);
+    const store = new ConfigStore(env.DB, env.ENCRYPTION_KEY);
     const traceStore = new TraceStore(env.DB);
     const ctx = { env, config, configStore: store, traceStore, request, params: {} as Record<string, string>, url };
     return healthWithConfig(ctx);
   }
 
-  // All other /api/* require admin auth (same key pool as the proxy endpoints).
+  // All other /api/* require admin auth.
   const config = await loadConfig(env);
   const auth = await authenticate(request, config, env);
   if (!auth.ok) return authDenied(auth);
+  if (!hasScope(auth, SCOPE_ADMIN)) return scopeDenied();
 
   const ctx = {
     env,
@@ -178,6 +186,7 @@ async function serveProxy(
   const config = await loadConfig(env);
   const auth = await authenticate(request, config, env);
   if (!auth.ok) return authDenied(auth);
+  if (!hasScope(auth, SCOPE_INVOKE)) return scopeDenied();
 
   const deps: PipelineDeps = {
     env,
@@ -185,6 +194,7 @@ async function serveProxy(
     traces: singletons.traceStore,
     router: singletons.router,
     mode: config.runtime?.mode as string | undefined,
+    fusionPlans: config.fusion_plans,
   };
   const reqCtx: RequestContext = { deps, request, path, method };
 

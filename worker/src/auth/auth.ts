@@ -19,6 +19,16 @@ export interface AuthResult {
   scopes?: string[];
 }
 
+/** Scope constants: "*" = full access, "admin" = dashboard management, "invoke" = proxy calls. */
+export const SCOPE_ADMIN = "admin";
+export const SCOPE_INVOKE = "invoke";
+
+export function hasScope(auth: AuthResult, scope: string): boolean {
+  const scopes = auth.scopes;
+  if (!scopes || scopes.length === 0) return true;
+  return scopes.includes("*") || scopes.includes(scope);
+}
+
 function extractToken(headers: Headers): string {
   const auth = headers.get("authorization") ?? "";
   if (auth.toLowerCase().startsWith("bearer ")) {
