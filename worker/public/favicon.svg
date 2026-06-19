@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="SuperDeepSeek">
+  <rect width="64" height="64" rx="14" fill="#0a0a0a"/>
+  <circle cx="32" cy="32" r="20" stroke="#4d6bfe" stroke-width="3" opacity="0.25"/>
+  <circle cx="32" cy="32" r="13" stroke="#4d6bfe" stroke-width="3" opacity="0.5"/>
+  <circle cx="32" cy="32" r="6" fill="#4d6bfe"/>
+  <text x="32" y="56" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" fill="#4d6bfe" text-anchor="middle" letter-spacing="1">SDS</text>
+</svg>
