@@ -69,7 +69,7 @@ export class ConfigStore {
       .prepare(
         `INSERT INTO provider_profiles
           (id, name, base_url, api_key, protocol, default_model, models, enabled, timeout_ms, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'))
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
          ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
           base_url = excluded.base_url,
@@ -77,6 +77,7 @@ export class ConfigStore {
           protocol = excluded.protocol,
           default_model = excluded.default_model,
           models = excluded.models,
+          enabled = excluded.enabled,
           timeout_ms = excluded.timeout_ms,
           updated_at = datetime('now')`,
       )
@@ -88,6 +89,7 @@ export class ConfigStore {
         profile.protocol,
         profile.default_model ?? null,
         JSON.stringify(profile.capabilities?.models ?? []),
+        profile.enabled === false ? 0 : 1,
         profile.degraded_threshold_ms ?? 60000,
       )
       .run();

@@ -97,8 +97,11 @@ export async function saveConfig(env: Env, config: SuperDeepSeekConfig): Promise
     // ignore
   }
 
-  // Sync aliases: upsert aliases that carry a target_model (Worker shape); leave
-  // table-managed aliases otherwise untouched to avoid wiping /api/aliases CRUD.
+  // Sync aliases: upsert aliases that carry a target_model (Worker shape), then
+  // delete normalized rows no longer present in the config so removed aliases stop
+  // participating in routing. Only aliases that carry a target_model are treated as
+  // config-managed; anything else is left untouched to avoid wiping /api/aliases CRUD.
+  const keepAliasNames = new Set<string>();
   for (const alias of config.model_aliases ?? []) {
     const ext = alias as Record<string, unknown>;
     const target = ext.target_model;
@@ -114,7 +117,16 @@ export async function saveConfig(env: Env, config: SuperDeepSeekConfig): Promise
       enabled: alias.enabled !== false,
     };
     if (typeof ext.provider_id === "string") stored.provider_id = ext.provider_id;
+    keepAliasNames.add(stored.alias);
     await store.upsertAlias(stored);
+  }
+  try {
+    const existing = await store.listAliases();
+    for (const a of existing) {
+      if (!keepAliasNames.has(a.alias)) await store.deleteAlias(a.alias);
+    }
+  } catch {
+    // ignore
   }
 }
 

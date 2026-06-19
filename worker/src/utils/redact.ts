@@ -23,7 +23,9 @@ export function redactText(text: string): string {
   for (const { re, group } of SECRET_PATTERNS) {
     out = out.replace(re, (...args) => {
       if (group) {
-        const captured = args[group - 1] as string | undefined;
+        // In String.replace callbacks, args[0] is the full match and args[n]
+        // is the n-th capture group, so a 1-based `group` maps directly to args[group].
+        const captured = args[group] as string | undefined;
         return (captured ?? "") + "<redacted>";
       }
       return "<redacted>";

@@ -104,6 +104,32 @@ describe("config <-> normalized table consistency", () => {
     expect(aliases.some((a) => a.alias === "claude-x" && a.target_model === "deepseek-chat")).toBe(true);
   });
 
+  it("saveConfig deletes aliases no longer present in the config (no stale routing)", async () => {
+    // Regression: saveConfig only upserted aliases and never deleted removed ones,
+    // so an alias dropped from the full config kept living in the table and routing.
+    const e = env();
+    await saveConfig(e, {
+      ...BASE,
+      model_aliases: [
+        { alias: "keep-me", profile_id: "default", role: "main", target_model: "deepseek-chat" } as unknown as SuperDeepSeekConfig["model_aliases"][number],
+        { alias: "drop-me", profile_id: "default", role: "main", target_model: "deepseek-chat" } as unknown as SuperDeepSeekConfig["model_aliases"][number],
+      ],
+    });
+    const store = new ConfigStore(e.DB);
+    expect((await store.listAliases()).map((a) => a.alias).sort()).toEqual(["drop-me", "keep-me"]);
+
+    // Save again with "drop-me" removed.
+    await saveConfig(e, {
+      ...BASE,
+      model_aliases: [
+        { alias: "keep-me", profile_id: "default", role: "main", target_model: "deepseek-chat" } as unknown as SuperDeepSeekConfig["model_aliases"][number],
+      ],
+    });
+    const after = await store.listAliases();
+    expect(after.map((a) => a.alias)).toEqual(["keep-me"]);
+    expect(after.some((a) => a.alias === "drop-me")).toBe(false);
+  });
+
   it("loadConfig hydrates local_api_key from the SUPERDS_LOCAL_API_KEY secret", async () => {
     const e: { DB: D1Database; SUPERDS_LOCAL_API_KEY?: string } = { DB: new MockD1({ configValue: JSON.stringify(BASE) }) as unknown as D1Database };
     e.SUPERDS_LOCAL_API_KEY = "from-secret";

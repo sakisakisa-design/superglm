@@ -58,10 +58,12 @@ export class MockD1 {
     if (q.startsWith("insert into config")) {
       this.configValue = String(values[0] ?? "");
     } else if (q.includes("insert into provider_profiles")) {
-      const [id, name, base_url, api_key, protocol, default_model, models, timeout_ms] = values;
+      const [id, name, base_url, api_key, protocol, default_model, models, enabled, timeout_ms] = values;
+      const existing = this.providers.get(String(id));
       this.providers.set(String(id), {
-        id, name, base_url, api_key, protocol, default_model, models, enabled: 1, timeout_ms,
-        created_at: now(), updated_at: now(),
+        id, name, base_url, api_key, protocol, default_model, models,
+        enabled: enabled ?? 1, timeout_ms,
+        created_at: existing?.created_at ?? now(), updated_at: now(),
       });
     } else if (q.includes("insert into aliases")) {
       const [id, alias, target_model, provider_id, strategy, enabled] = values;

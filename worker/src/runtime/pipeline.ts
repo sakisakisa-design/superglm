@@ -1073,7 +1073,7 @@ function handleGatewayError(
   sanitizer: SanitizationReport,
 ): Response {
   const latencyMs = Date.now() - start;
-  const statusCode = err instanceof UpstreamStatusError ? err.status : 502;
+  const statusCode = resolveUpstreamStatus(err);
   const message = err instanceof Error ? err.message : String(err);
   steps.push(step("Gateway Error", "error", "error", message.slice(0, 300)));
   void writeTrace(ctx, traceRecord({
@@ -1092,6 +1092,19 @@ function handleGatewayError(
   }));
   return new Response(
     JSON.stringify({ error: { type: "upstream_error", upstream_status: statusCode, message, trace_id: traceId } }),
-    { status: 502, headers: { "content-type": "application/json", "x-superds-trace-id": traceId } },
+    { status: statusCode, headers: { "content-type": "application/json", "x-superds-trace-id": traceId } },
   );
+}
+
+/**
+ * Map an error to the HTTP status the client should see. Upstream auth/limit/request
+ * errors (401, 429, 400, ...) are surfaced verbatim so SDKs can react correctly;
+ * everything else (network failure, unknown) becomes a 502 bad gateway.
+ */
+export function resolveUpstreamStatus(err: unknown): number {
+  if (err instanceof UpstreamStatusError) {
+    const status = err.status;
+    if (typeof status === "number" && status >= 400 && status <= 599) return status;
+  }
+  return 502;
 }

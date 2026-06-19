@@ -39,8 +39,8 @@ class FakeD1 {
 
   run(query: string, values: unknown[]): void {
     if (query.includes("provider_profiles")) {
-      const [id, name, base_url, api_key, protocol, default_model, models, timeout_ms] = values;
-      this.providers[String(id)] = { id, name, base_url, api_key, protocol, default_model, models, enabled: 1, timeout_ms };
+      const [id, name, base_url, api_key, protocol, default_model, models, enabled, timeout_ms] = values;
+      this.providers[String(id)] = { id, name, base_url, api_key, protocol, default_model, models, enabled: enabled ?? 1, timeout_ms };
     } else if (query.includes("aliases")) {
       const [id, alias, target_model, provider_id, strategy, enabled] = values;
       this.aliases[String(alias)] = { id, alias, target_model, provider_id, strategy, enabled };
@@ -125,6 +125,42 @@ describe("D1 stores", () => {
       default_model: "zai-org/GLM-5.2",
     });
     expect(await store.listAliases()).toHaveLength(1);
+  });
+
+  it("persists provider enabled=false on insert and update", async () => {
+    // Regression: enabled was hard-coded to 1 on insert and never updated, so a
+    // provider disabled in the dashboard kept getting picked by the router.
+    const db = new FakeD1() as unknown as D1Database;
+    const store = new ConfigStore(db);
+
+    await store.upsertProviderProfile({
+      id: "sf",
+      name: "SiliconFlow",
+      protocol: "openai",
+      base_url: "https://api.siliconflow.cn/v1",
+      enabled: false,
+    });
+    expect((await store.getProviderProfile("sf"))?.enabled).toBe(false);
+
+    // Re-enable via update.
+    await store.upsertProviderProfile({
+      id: "sf",
+      name: "SiliconFlow",
+      protocol: "openai",
+      base_url: "https://api.siliconflow.cn/v1",
+      enabled: true,
+    });
+    expect((await store.getProviderProfile("sf"))?.enabled).toBe(true);
+
+    // Disable again via update.
+    await store.upsertProviderProfile({
+      id: "sf",
+      name: "SiliconFlow",
+      protocol: "openai",
+      base_url: "https://api.siliconflow.cn/v1",
+      enabled: false,
+    });
+    expect((await store.getProviderProfile("sf"))?.enabled).toBe(false);
   });
 
   it("redacts traces before storing", async () => {
