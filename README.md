@@ -2,25 +2,79 @@
 
 [中文说明](README.zh-CN.md)
 
-superglm is a Cloudflare Worker edition of SuperDeepSeek: a public AI gateway
-with a hosted dashboard, persistent D1 configuration, Claude Code compatible
-endpoints, OpenAI-compatible endpoints, streaming, trace logs, alias routing, and
-billing-header sanitization.
+Give text-only models eyes and a brain.
 
-Fork it, deploy it to Cloudflare, open the dashboard, and configure providers
-from the browser.
+superglm is not just another API proxy. It's a **model enhancement gateway** deployed on Cloudflare Workers that does two things nobody else does:
 
-## What You Get
+1. **Vision injection**: when a text-only model (GLM, DeepSeek, Qwen, etc.) receives an image, superglm automatically converts the image into a structured textual evidence packet and injects it into the conversation. Text-only models can now "see" and respond to image content.
+2. **Mixture-of-experts fusion**: multiple cheap models answer in parallel as a panel, then a synthesizer model distills all responses into one final answer. Results approach flagship quality at a fraction of the cost.
 
-- Cloudflare Worker API and proxy runtime under `worker/`
-- React dashboard (pre-built static assets) served by Workers Static Assets
-- D1 persistence for providers, aliases, traces, config, and gateway keys
-- Anthropic-compatible `/v1/messages` for Claude Code style clients
-- OpenAI-compatible `/openai/v1/chat/completions` and `/openai/v1/responses`
-- Streaming support for Anthropic/OpenAI-compatible responses
-- Trace logs with secret redaction
-- Alias routing with provider pinning and failover-friendly routing
-- Billing and identity header sanitization before upstream forwarding
+In one sentence: **use cheap text-only models to achieve flagship-level performance.**
+
+## What Problem It Solves
+
+You already have a bunch of cheap, capable models. But:
+
+- They don't support images. Users send a picture and get an error.
+- Used individually, quality is inconsistent. Sometimes great, sometimes meh.
+- Flagship models are too expensive for everyday use.
+
+superglm solves all of this at the gateway layer:
+
+| Problem | How superglm handles it |
+|---------|------------------------|
+| Text-only models can't see images | Images auto-converted to textual evidence packets (image_policy: evidence_only). The model responds as if it received a description. |
+| Single model quality isn't enough | Multi-model parallel answering + synthesizer distillation (Fusion). Three heads are better than one. |
+| Want vision models to see raw images | image_policy: keep_for_vision_panels. Raw image blocks pass through to vision-capable panels. |
+| Don't want Fusion touching images | image_policy: reject. Returns 400 if any image is detected. |
+| Too many panels might overload | max_panel_count + max_parallel_panels hard caps. Defaults: max 12 panels, 6 concurrent. |
+| A provider goes down | Automatic failover to same-protocol alternatives with circuit breaker. |
+
+## Core Capabilities
+
+### Vision Injection
+
+When a request contains images, superglm detects them and:
+
+1. Extracts image information into a structured textual evidence packet.
+2. Injects the packet as a system message into the conversation.
+3. Decides whether to strip the original image blocks based on policy:
+   - `evidence_only` (default): strips image blocks, keeps only text evidence. Non-vision models won't reject the payload.
+   - `keep_for_vision_panels`: keeps raw image blocks so vision-capable panels see them directly.
+   - `reject`: refuses image-bearing requests with 400.
+
+Text-only models now have "eyes."
+
+### Mixture-of-Experts Fusion
+
+Set an alias to `strategy: "fusion"` and requests flow through the fusion pipeline:
+
+```
+User request
+   │
+   ├──► Panel 1 (model A) ──┐
+   ├──► Panel 2 (model B) ──┤  parallel, bounded by max_parallel_panels
+   ├──► Panel 3 (model C) ──┘
+   │
+   ▼
+Synthesizer ── distills all panel responses ──► final answer (streamed)
+```
+
+- Panel phase: multiple models answer the same question independently, in parallel.
+- Synthesizer phase: a synthesizer model reads all panel responses and distills one final answer, streamed to the client.
+- Timeout control (timeout_ms), circuit breaker, and failover throughout.
+- Self-consistency mode supported: same model sampled at different temperatures, then synthesized.
+
+### Other Gateway Features
+
+- Claude Code compatible `/v1/messages` endpoint.
+- OpenAI compatible `/openai/v1/chat/completions` and `/openai/v1/responses`.
+- Streaming for Anthropic / OpenAI / Responses protocols.
+- Alias routing with provider pinning and automatic failover.
+- Request trace logs with secret redaction.
+- Billing / identity header sanitization before upstream forwarding.
+- Hosted React dashboard, configure providers and aliases in the browser.
+- D1 persistence, no config loss.
 
 ## Deploy To Cloudflare
 
@@ -47,18 +101,6 @@ the Cloudflare GitHub deployment does not need a separate build step. The Worker
 creates the D1 tables it needs on first request, so first-time deploys do not
 need a local migration step.
 
-If the first build says the `DB` binding is missing, create a D1 database in the
-Cloudflare dashboard, bind it to the Worker as `DB`, then retry the deployment.
-
-If the live Worker does not redeploy after a GitHub push, check:
-
-- Cloudflare is connected to your fork and the branch you are pushing.
-- Workers & Pages -> your Worker -> Settings -> Builds shows GitHub connected.
-- Root directory is the repository root.
-- The Worker name matches `wrangler.jsonc`; the default name is `superglm`.
-- Use Retry deployment / Deploy latest commit once and read the build log for the
-  exact error.
-
 ### Quick demo: Deploy to Cloudflare button
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sakisakisa-design/superglm)
@@ -81,8 +123,6 @@ Prerequisites:
 - Node.js 20+
 - A Cloudflare account
 - Wrangler login already completed, or let Wrangler prompt during the commands
-
-From a fresh fork:
 
 ```bash
 npm install
@@ -107,6 +147,40 @@ Use the hosted dashboard to add an upstream provider:
 
 Then add aliases that map public model names to real upstream models. Clients
 send requests to the alias; superglm resolves the upstream provider/model.
+
+### Configure Fusion
+
+Set the alias strategy to `fusion` and configure the fusion plan:
+
+```json
+{
+  "strategy": "fusion",
+  "panel_models": [
+    { "model": "glm-4-flash", "provider_id": "zhipu" },
+    { "model": "deepseek-v3", "provider_id": "siliconflow" },
+    { "model": "qwen-plus", "provider_id": "dashscope" }
+  ],
+  "synthesizer_model": "deepseek-v3",
+  "synthesizer_provider_id": "siliconflow",
+  "max_tokens_per_panel": 1024,
+  "timeout_ms": 15000,
+  "max_panel_count": 6,
+  "max_parallel_panels": 3,
+  "image_policy": "evidence_only"
+}
+```
+
+Or use `self_consistency` strategy to sample the same model at different
+temperatures and synthesize:
+
+```json
+{
+  "strategy": "self_consistency",
+  "self_consistency": { "model": "glm-4-flash", "provider_id": "zhipu", "samples": 3 },
+  "synthesizer_model": "glm-4-flash",
+  "synthesizer_provider_id": "zhipu"
+}
+```
 
 ## Claude Code
 

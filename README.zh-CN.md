@@ -2,23 +2,79 @@
 
 [English](README.md)
 
-superglm 是 SuperDeepSeek 的 Cloudflare Worker 版：一个可以公开部署的 AI
-网关，带云端控制面板、D1 持久化配置、Claude Code 兼容入口、OpenAI-compatible
-入口、流式响应、trace 日志、alias 路由和 billing header 清理。
+给纯文本大模型加上眼睛和脑子。
 
-Fork 之后部署到 Cloudflare，打开网页控制面板，然后在浏览器里配置 provider 和 alias。
+superglm 不是又一个 API 代理。它是一个部署在 Cloudflare Worker 上的**模型增强网关**，做两件别家不做的事：
 
-## 你会得到什么
+1. **视觉注入**：纯文本模型（GLM、DeepSeek、Qwen 等没有视觉能力的模型）收到图片时，superglm 自动把图片转成结构化文字证据包注入对话，让纯文本模型也能"看懂"图片内容并回答。
+2. **混合专家融合（Fusion）**：把多个便宜模型组成专家组并行回答，再由一个综合模型（synthesizer）把所有回答提炼成一条最终回复。效果逼近旗舰模型，成本只有零头。
 
-- `worker/` 下的 Cloudflare Worker API 和代理运行时
-- React 控制面板（预构建静态文件），由 Workers Static Assets 托管
-- D1 持久化 providers、aliases、traces、config 和 gateway keys
-- Claude Code 可用的 Anthropic-compatible `/v1/messages`
-- OpenAI-compatible `/openai/v1/chat/completions` 和 `/openai/v1/responses`
-- Anthropic/OpenAI-compatible 流式响应
-- 带脱敏的请求 trace 日志
-- 支持 provider pinning 的 alias 路由
-- 转发上游前清理 billing / identity headers
+一句话：**用便宜的纯文本模型，拼出旗舰级的表现。**
+
+## 它解决什么问题
+
+你已经有一堆便宜的好模型。它们各自有长处，但：
+
+- 不支持图片，用户发图就报错。
+- 单独用，回答质量不稳定，有时好有时差。
+- 旗舰模型太贵，日常用肉疼。
+
+superglm 在网关层把这些全解决：
+
+| 问题 | superglm 怎么做 |
+|------|----------------|
+| 纯文本模型不能看图 | 图片自动转文字证据包（image_policy: evidence_only），模型像收到一段描述一样回答 |
+| 单模型质量不够 | 多模型并行回答 + 综合模型提炼（Fusion），三个臭皮匠顶个诸葛亮 |
+| 想让视觉模型直接看图 | image_policy: keep_for_vision_panels，原图块原样透传给视觉 panel |
+| 不想让 Fusion 碰图 | image_policy: reject，检测到图直接 400 |
+| 配太多 panel 怕炸 | max_panel_count + max_parallel_panels 硬上限，默认最多 12 个 panel、6 路并发 |
+| 某个 provider 挂了 | 自动 failover 到同协议的其他 provider，带熔断器 |
+
+## 核心能力
+
+### 视觉注入（Vision Evidence）
+
+当请求带图片时，superglm 检测到图片后：
+
+1. 提取图片信息，生成结构化文字证据包。
+2. 把证据包作为 system message 注入对话。
+3. 根据策略决定是否剥除原始图片块：
+   - `evidence_only`（默认）：剥除图片块，只留文字证据，非视觉模型不会因为 payload 带图而报错。
+   - `keep_for_vision_panels`：保留原图块，让视觉能力 panel 直接看图。
+   - `reject`：拒绝带图请求，返回 400。
+
+纯文本模型从此有了"眼睛"。
+
+### 混合专家融合（Fusion）
+
+给 alias 配上 `strategy: "fusion"`，请求就会走融合流水线：
+
+```
+用户请求
+   │
+   ├──► Panel 1（模型 A）──┐
+   ├──► Panel 2（模型 B）──┤  并行，并发受 max_parallel_panels 限制
+   ├──► Panel 3（模型 C）──┘
+   │
+   ▼
+Synthesizer（综合模型）── 提炼所有 panel 回答 ──► 最终回复
+```
+
+- Panel 阶段：多个模型并行回答同一个问题，各自独立。
+- Synthesizer 阶段：一个综合模型读取所有 panel 的回答，提炼出一条最终回复，流式输出。
+- 全程带超时控制（timeout_ms）、熔断器和 failover。
+- 支持 self_consistency 模式：同一个模型用不同温度采样多次，再综合。
+
+### 其他网关能力
+
+- Claude Code 兼容的 `/v1/messages` 入口。
+- OpenAI 兼容的 `/openai/v1/chat/completions` 和 `/openai/v1/responses`。
+- 流式响应，Anthropic / OpenAI / Responses 三种协议都支持。
+- Alias 路由，支持 provider pinning 和自动 failover。
+- 请求 trace 日志，带密钥脱敏。
+- Billing / identity header 清理，转发前剥干净。
+- 云端 React 控制面板，浏览器里配 provider 和 alias。
+- D1 持久化，不丢配置。
 
 ## 部署到 Cloudflare
 
@@ -45,14 +101,6 @@ Worker 控制面板已经预构建在 `worker/assets`，所以 Cloudflare GitHub
 如果第一次构建提示缺少 `DB` binding，就在 Cloudflare Dashboard 里创建一个 D1
 database，并把它以 `DB` 这个 binding 名绑定到 Worker，然后重试部署。
 
-如果线上 Worker 没有因为 GitHub 新提交自动重新部署，检查这几项：
-
-- Cloudflare 连接的是你的 fork 和你正在推送的 branch。
-- Workers & Pages -> 你的 Worker -> Settings -> Builds 里已经连接 GitHub。
-- Root directory 是仓库根目录。
-- Worker 名称和根目录 `wrangler.jsonc` 里的 `name` 一致，默认是 `superglm`。
-- 在 Builds 页面手动点一次 Retry deployment / Deploy latest commit，确认构建日志没有报错。
-
 ### 快速试玩：Deploy to Cloudflare 按钮
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sakisakisa-design/superglm)
@@ -73,8 +121,6 @@ Claude/OpenAI-compatible 客户端共用的 gateway admin key。
 - Node.js 20+
 - Cloudflare 账号
 - Wrangler 已登录，或在命令执行时按 Wrangler 提示登录
-
-从一个新的 fork 开始：
 
 ```bash
 npm install
@@ -99,6 +145,39 @@ npm run deploy
 
 然后添加 alias，把客户端看到的模型名映射到真实上游模型。客户端请求 alias，
 superglm 负责解析到对应 provider/model。
+
+### 配置 Fusion
+
+在 alias 的 strategy 设为 `fusion`，然后配 fusion plan：
+
+```json
+{
+  "strategy": "fusion",
+  "panel_models": [
+    { "model": "glm-4-flash", "provider_id": "zhipu" },
+    { "model": "deepseek-v3", "provider_id": "siliconflow" },
+    { "model": "qwen-plus", "provider_id": "dashscope" }
+  ],
+  "synthesizer_model": "deepseek-v3",
+  "synthesizer_provider_id": "siliconflow",
+  "max_tokens_per_panel": 1024,
+  "timeout_ms": 15000,
+  "max_panel_count": 6,
+  "max_parallel_panels": 3,
+  "image_policy": "evidence_only"
+}
+```
+
+也可以用 `self_consistency` 策略，让同一个模型用不同温度采样多次再综合：
+
+```json
+{
+  "strategy": "self_consistency",
+  "self_consistency": { "model": "glm-4-flash", "provider_id": "zhipu", "samples": 3 },
+  "synthesizer_model": "glm-4-flash",
+  "synthesizer_provider_id": "zhipu"
+}
+```
 
 ## Claude Code
 
